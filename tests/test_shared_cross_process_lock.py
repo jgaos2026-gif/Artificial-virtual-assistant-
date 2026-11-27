@@ -81,3 +81,32 @@ def test_writer_appends_with_shared_lock(tmp_path):
     log = TransactionalColdLog(target)
     log.append({"id": "one"})
     assert target.read_text().endswith("\n")
+
+
+def _anchored_writer_lock_worker(lock_path, started, acquired):
+    from ava_military.anchor import _exclusive_writer_lock
+    started.set()
+    with _exclusive_writer_lock(lock_path):
+        acquired.set()
+
+
+def test_shared_lock_interoperates_with_unchanged_anchored_cold_log_lock(tmp_path):
+    target = tmp_path / "anchored.jsonl"
+    lock_path = target.with_name(target.name + ".writer.lock")
+    ctx = mp.get_context("spawn")
+    started, acquired = ctx.Event(), ctx.Event()
+    proc = ctx.Process(
+        target=_anchored_writer_lock_worker,
+        args=(str(lock_path), started, acquired),
+    )
+    with CrossProcessAdvisoryLock(target).exclusive():
+        assert lock_path_for(target) == lock_path
+        proc.start()
+        assert started.wait(5)
+        assert not acquired.wait(0.25)
+    assert acquired.wait(5)
+    proc.join(5)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(5)
+    assert proc.exitcode == 0
