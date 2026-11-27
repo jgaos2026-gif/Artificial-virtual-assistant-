@@ -754,12 +754,31 @@ class SimulatedCustodyAuthority:
             prepared_payload = tx_prepared_payload.get(tx["transaction_id"])
             if prepared_payload is None:
                 raise CustodyIntegrityError("transaction has no authenticated PREPARED event")
-            candidate_json = canonical(prepared_payload.get("candidate")).decode("utf-8")
+            try:
+                candidate_data = prepared_payload["candidate"]
+                candidate_value = CheckpointCandidate(**candidate_data)
+                candidate_json = canonical(candidate_value.as_dict()).decode("utf-8")
+            except Exception as exc:
+                raise CustodyIntegrityError("authenticated PREPARED event has an invalid candidate") from exc
             if (
                 tx["candidate_json"] != candidate_json
+                or tx["request_digest"] != sha256_hex(canonical(candidate_value.as_dict()))
+                or tx["stream_id"] != candidate_value.stream_id
+                or tx["lineage_id"] != candidate_value.lineage_id
+                or tx["generation"] != candidate_value.generation
+                or tx["sequence_no"] != candidate_value.sequence_no
+                or tx["checkpoint_digest"] != candidate_value.checkpoint_digest
+                or tx["previous_checkpoint_digest"] != candidate_value.previous_checkpoint_digest
                 or tx["reservation_id"] != prepared_payload.get("reservation_id")
                 or tx["lease_expires_at"] != prepared_payload.get("lease_expires_at")
+                or tx["lease_policy_version"] != receipt.lease_policy_version
                 or receipt.reservation_id != tx["reservation_id"]
+                or receipt.stream_id != candidate_value.stream_id
+                or receipt.lineage_id != candidate_value.lineage_id
+                or receipt.generation != candidate_value.generation
+                or receipt.sequence_no != candidate_value.sequence_no
+                or receipt.checkpoint_digest != candidate_value.checkpoint_digest
+                or receipt.previous_checkpoint_digest != candidate_value.previous_checkpoint_digest
             ):
                 raise CustodyIntegrityError("transaction fields disagree with authenticated PREPARED event")
             position = conn.execute(
@@ -809,7 +828,7 @@ class SimulatedCustodyAuthority:
                 or auth["previous_generation"] != signed_receipt.previous_generation
                 or auth["target_generation"] != signed_receipt.target_generation
                 or auth_id != signed_receipt.recovery_authorization_id
-                or canonical(json.loads(auth["receipt_json"])) != canonical(signed_receipt.as_dict())
+                or self._decode_receipt(auth["receipt_json"]) != signed_receipt
                 or auth["consumed_by"] != consumed_recoveries.get(auth_id)
             ):
                 raise CustodyIntegrityError("recovery authorization row disagrees with signed receipt or journal history")
