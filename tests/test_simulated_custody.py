@@ -1316,3 +1316,120 @@ def test_receipt_verification_uses_one_snapshot_during_concurrent_floor_advance(
     assert verification_results[0].admission_ready is False
     assert writer_done.is_set()
     assert auth.verify_receipt(first_commit).outcome == VerificationOutcome.AUTHENTIC_HISTORICAL
+
+
+def test_floor_attestation_verification_uses_one_snapshot_during_floor_advance(tmp_path, monkeypatch):
+    import threading
+
+    auth = make_authority(tmp_path)
+    _, first_commit = prepare_commit(auth, tx="floor-snapshot-first")
+    old_attestation = auth.read_floor("stream-1")
+    next_candidate = candidate(
+        b"floor-snapshot-second", seq=1, previous=first_commit.checkpoint_digest,
+    )
+    prepared = auth.prepare(next_candidate, "floor-snapshot-second")
+    evidence = PersistenceEvidence(
+        "floor-snapshot-second", prepared.reservation_id,
+        next_candidate.checkpoint_digest, b"floor-snapshot-second", "floor-snapshot-evidence",
+    )
+
+    snapshot_ready = threading.Event()
+    release_reader = threading.Event()
+    writer_done = threading.Event()
+    original_verify_state = auth._verify_state
+    verification_results = []
+    verification_errors = []
+
+    def pause_after_state_reconstruction(conn):
+        original_verify_state(conn)
+        if threading.current_thread().name == "floor-attestation-reader":
+            snapshot_ready.set()
+            if not release_reader.wait(5):
+                raise AssertionError("test did not release floor-attestation reader")
+
+    monkeypatch.setattr(auth, "_verify_state", pause_after_state_reconstruction)
+
+    def verify_old_attestation():
+        try:
+            verification_results.append(auth.verify_floor_attestation(old_attestation))
+        except Exception as exc:
+            verification_errors.append(exc)
+
+    def advance_floor():
+        try:
+            auth.commit("floor-snapshot-second", prepared.reservation_id, evidence)
+        finally:
+            writer_done.set()
+
+    reader = threading.Thread(target=verify_old_attestation, name="floor-attestation-reader")
+    reader.start()
+    assert snapshot_ready.wait(5), "floor verification did not reach state reconstruction"
+    writer = threading.Thread(target=advance_floor, name="floor-attestation-writer")
+    writer.start()
+    writer_blocked_by_snapshot = not writer_done.wait(0.1)
+    release_reader.set()
+    reader.join(5)
+    writer.join(5)
+
+    assert not reader.is_alive() and not writer.is_alive()
+    assert verification_errors == []
+    assert len(verification_results) == 1
+    assert writer_blocked_by_snapshot, "floor COMMIT completed while attestation verification was in progress"
+    assert verification_results[0] is True
+    assert writer_done.is_set()
+
+
+def test_read_floor_uses_one_snapshot_during_signing_key_rotation(tmp_path, monkeypatch):
+    import threading
+
+    auth = make_authority(tmp_path)
+    prepare_commit(auth, tx="read-floor-snapshot")
+    snapshot_ready = threading.Event()
+    release_reader = threading.Event()
+    writer_done = threading.Event()
+    original_active_key = auth._active_key
+    attestations = []
+    reader_errors = []
+
+    def pause_after_signer_read(conn):
+        result = original_active_key(conn)
+        if threading.current_thread().name == "read-floor-snapshot-reader":
+            snapshot_ready.set()
+            if not release_reader.wait(5):
+                raise AssertionError("test did not release read_floor reader")
+        return result
+
+    monkeypatch.setattr(auth, "_active_key", pause_after_signer_read)
+
+    def read_floor():
+        try:
+            attestations.append(auth.read_floor("stream-1"))
+        except Exception as exc:
+            reader_errors.append(exc)
+
+    def rotate_signing_key():
+        try:
+            auth.revoke_authority(
+                new_authority_epoch=1, reason="snapshot race",
+                authorization_proof="test-only proof", target_key_id="key-a",
+                next_active_key_id="key-b",
+            )
+        finally:
+            writer_done.set()
+
+    reader = threading.Thread(target=read_floor, name="read-floor-snapshot-reader")
+    reader.start()
+    assert snapshot_ready.wait(5), "read_floor did not reach signer selection"
+    writer = threading.Thread(target=rotate_signing_key, name="read-floor-snapshot-writer")
+    writer.start()
+    writer_blocked_by_snapshot = not writer_done.wait(0.1)
+    release_reader.set()
+    reader.join(5)
+    writer.join(5)
+
+    assert not reader.is_alive() and not writer.is_alive()
+    assert reader_errors == []
+    assert len(attestations) == 1
+    assert writer_blocked_by_snapshot, "key rotation completed while read_floor was assembling an attestation"
+    assert auth.verify_floor_attestation(attestations[0]) is True
+    assert writer_done.is_set()
