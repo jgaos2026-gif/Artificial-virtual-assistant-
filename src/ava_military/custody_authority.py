@@ -545,6 +545,7 @@ class SimulatedCustodyAuthority:
         latest_committed: dict[str, dict[str, Any]] = {}
         recovery_events: dict[str, tuple[sqlite3.Row, dict[str, Any], CustodyReceipt]] = {}
         consumed_recoveries: dict[str, str] = {}
+        recovery_commit_scopes: dict[str, tuple[str, dict[str, Any]]] = {}
         epoch = 0
         active_key_id = self._initial_active_key_id
         authority_revoked = False
@@ -612,6 +613,11 @@ class SimulatedCustodyAuthority:
                     or receipt.sequence_no != payload["sequence_no"]
                     or receipt.checkpoint_digest != payload["checkpoint_digest"]
                     or receipt.previous_checkpoint_digest != payload["previous_checkpoint_digest"]
+                    or receipt.recovery_authorization_id != payload.get("recovery_authorization_id")
+                    or receipt.previous_lineage_id != payload.get("previous_lineage_id")
+                    or receipt.lineage_parent_id != payload.get("lineage_parent_id")
+                    or receipt.previous_generation != payload.get("previous_generation")
+                    or receipt.target_generation != payload.get("target_generation")
                 ):
                     raise CustodyIntegrityError("committed event disagrees with its signed receipt")
                 previous = latest_committed.get(stream_id)
@@ -647,6 +653,7 @@ class SimulatedCustodyAuthority:
                         if auth_id in consumed_recoveries:
                             raise CustodyIntegrityError("recovery authorization was consumed more than once")
                         consumed_recoveries[auth_id] = str(txid)
+                        recovery_commit_scopes[auth_id] = (str(txid), payload)
                 if not valid_order:
                     raise CustodyIntegrityError("committed checkpoint history is non-monotonic or has a broken chain link")
                 latest_committed[stream_id] = {
@@ -673,7 +680,12 @@ class SimulatedCustodyAuthority:
                     or authority_revoked
                 ):
                     raise CustodyIntegrityError("authority key transition is inconsistent or non-monotonic")
-                if receipt is None or receipt.key_id != new_active or receipt.authority_epoch != next_epoch:
+                if (
+                    receipt is None or receipt.key_id != new_active
+                    or receipt.authority_epoch != next_epoch
+                    or payload.get("target_authority_id") is not None
+                    or payload.get("authority_revoked") is not False
+                ):
                     raise CustodyIntegrityError("authority key transition receipt binding mismatch")
                 revoked[target] = {
                     "authority_epoch": next_epoch,
@@ -686,7 +698,12 @@ class SimulatedCustodyAuthority:
                 next_epoch = payload.get("authority_epoch")
                 if authority_revoked or next_epoch != epoch + 1:
                     raise CustodyIntegrityError("authority revocation epoch is inconsistent")
-                if receipt is None or receipt.authority_epoch != next_epoch:
+                if (
+                    receipt is None or receipt.authority_epoch != next_epoch
+                    or payload.get("target_authority_id") != self.authority_id
+                    or payload.get("authority_revoked") is not True
+                    or payload.get("new_active_key_id") != receipt.key_id
+                ):
                     raise CustodyIntegrityError("authority revocation receipt binding mismatch")
                 epoch = next_epoch
                 active_key_id = payload.get("new_active_key_id")
@@ -770,6 +787,21 @@ class SimulatedCustodyAuthority:
                 or auth["consumed_by"] != consumed_recoveries.get(auth_id)
             ):
                 raise CustodyIntegrityError("recovery authorization row disagrees with signed receipt or journal history")
+            committed_scope = recovery_commit_scopes.get(auth_id)
+            if committed_scope is not None:
+                _, commit_payload = committed_scope
+                if (
+                    commit_payload.get("stream_id") != auth["stream_id"]
+                    or commit_payload.get("lineage_id") != auth["target_lineage_id"]
+                    or commit_payload.get("previous_lineage_id") != auth["previous_lineage_id"]
+                    or commit_payload.get("lineage_parent_id") != auth["lineage_parent_id"]
+                    or commit_payload.get("previous_generation") != auth["previous_generation"]
+                    or commit_payload.get("target_generation") != auth["target_generation"]
+                    or commit_payload.get("generation") != auth["target_generation"]
+                    or commit_payload.get("sequence_no") != 0
+                    or commit_payload.get("previous_checkpoint_digest") != signed_receipt.previous_checkpoint_digest
+                ):
+                    raise CustodyIntegrityError("committed recovery transition exceeds its signed authorization scope")
 
         revocation_rows = conn.execute("SELECT * FROM revocations").fetchall()
         if {row["key_id"] for row in revocation_rows} != set(revoked):
