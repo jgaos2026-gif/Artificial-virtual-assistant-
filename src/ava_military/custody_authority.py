@@ -1301,9 +1301,18 @@ class SimulatedCustodyAuthority:
             conn.close()
 
     def verify_floor_attestation(self, attestation: FloorAttestation) -> bool:
+        """Verify signature, current signer authority, and freshness against the current floor."""
         if not isinstance(attestation, FloorAttestation) or attestation.authority_id != self.authority_id:
             return False
-        if attestation.custody_mode != CUSTODY_MODE or attestation.key_id not in self._keys:
+        if (
+            attestation.custody_mode != CUSTODY_MODE
+            or attestation.signature_algorithm != "HMAC-SHA256-TEST-ONLY"
+            or attestation.key_id not in self._keys
+            or not hmac.compare_digest(
+                self._sign(self._keys[attestation.key_id], attestation.payload()),
+                attestation.signature,
+            )
+        ):
             return False
         conn = self._connect()
         try:
@@ -1312,11 +1321,23 @@ class SimulatedCustodyAuthority:
                 return False
             if int(self._meta_get(conn, "authority_epoch")) != attestation.authority_epoch:
                 return False
-            if conn.execute("SELECT 1 FROM revocations WHERE key_id=?", (attestation.key_id,)).fetchone():
+            if self._meta_get(conn, "active_key_id") != attestation.key_id:
                 return False
+            revoked = tuple(r["key_id"] for r in conn.execute("SELECT key_id FROM revocations ORDER BY key_id"))
+            if attestation.revoked_key_ids != revoked:
+                return False
+            floor = conn.execute("SELECT * FROM floors WHERE stream_id=?", (attestation.stream_id,)).fetchone()
+            expected = {
+                "lineage_id": floor["lineage_id"] if floor else None,
+                "generation": floor["generation"] if floor else None,
+                "sequence_no": floor["sequence_no"] if floor else None,
+                "checkpoint_digest": floor["checkpoint_digest"] if floor else None,
+                "previous_checkpoint_digest": floor["previous_checkpoint_digest"] if floor else None,
+                "receipt_id": floor["receipt_id"] if floor else None,
+            }
+            return all(getattr(attestation, field) == value for field, value in expected.items())
         finally:
             conn.close()
-        return hmac.compare_digest(self._sign(self._keys[attestation.key_id], attestation.payload()), attestation.signature)
 
     def verify_receipt(
         self, receipt: CustodyReceipt | Mapping[str, Any], *,
@@ -1337,39 +1358,67 @@ class SimulatedCustodyAuthority:
         if not self._verify_signature_only(item):
             return VerificationResult(VerificationOutcome.INVALID_SIGNATURE, False, CUSTODY_MODE, "receipt signature invalid")
 
-        def authenticated_result(outcome: VerificationOutcome, valid: bool, reason: str) -> VerificationResult:
+        def authenticated_result(
+            outcome: VerificationOutcome, valid: bool, reason: str, *,
+            issued: bool = False, signer_authorized: bool = False,
+        ) -> VerificationResult:
             return VerificationResult(
                 outcome, valid, CUSTODY_MODE, reason,
                 authenticated=True, lifecycle_status=item.custody_state,
-                admission_ready=False,
+                admission_ready=False, issued=issued,
+                signer_authorized=signer_authorized,
             )
 
         conn = self._connect()
         try:
             self._verify_state(conn)
+            history_row = conn.execute(
+                "SELECT receipt_json FROM receipts WHERE receipt_id=?", (item.receipt_id,)
+            ).fetchone()
+            issued = history_row is not None and self._decode_receipt(history_row["receipt_json"]) == item
             if conn.execute("SELECT 1 FROM revocations WHERE key_id=?", (item.key_id,)).fetchone():
-                return authenticated_result(VerificationOutcome.REVOKED_KEY, False, "receipt signature is authentic but its signing key is revoked")
+                return authenticated_result(
+                    VerificationOutcome.REVOKED_KEY, False,
+                    "receipt signature is authentic; signing key is revoked",
+                    issued=issued,
+                )
+            active_key_id = self._meta_get(conn, "active_key_id")
+            if item.key_id != active_key_id:
+                return authenticated_result(
+                    VerificationOutcome.UNAUTHORIZED_KEY, False,
+                    "receipt signature is authentic but signer is not active for this authority epoch",
+                    issued=issued,
+                )
             epoch = int(self._meta_get(conn, "authority_epoch"))
             if item.authority_epoch != epoch:
-                return authenticated_result(VerificationOutcome.STALE_EPOCH, False, "receipt signature is authentic but its authority epoch is stale")
+                return authenticated_result(
+                    VerificationOutcome.STALE_EPOCH, False,
+                    "receipt signature is authentic but authority epoch is stale",
+                    issued=issued,
+                )
+            if not issued:
+                return authenticated_result(
+                    VerificationOutcome.UNISSUED_RECEIPT, False,
+                    "receipt signature is authentic but no matching custody issuance record exists",
+                )
         except CustodyError:
             raise
         finally:
             conn.close()
         if item.lease_expires_at is not None and item.custody_state in (ReceiptStatus.PREPARED.value, ReceiptStatus.RECOVERY_AUTHORIZED.value):
             if self._now() >= item.lease_expires_at:
-                return authenticated_result(VerificationOutcome.EXPIRED, False, "receipt is authentic but its reservation lease expired")
+                return authenticated_result(VerificationOutcome.EXPIRED, False, "receipt is authentic and issued but its reservation lease expired", issued=True, signer_authorized=True)
         if expected_operation is not None and item.operation != expected_operation:
-            return authenticated_result(VerificationOutcome.WRONG_SCOPE, False, "receipt is authentic but operation scope does not match")
+            return authenticated_result(VerificationOutcome.WRONG_SCOPE, False, "receipt is authentic and issued but operation scope does not match", issued=True, signer_authorized=True)
         if expected_scope:
             for field, expected in expected_scope.items():
                 if getattr(item, field, object()) != expected:
-                    return authenticated_result(VerificationOutcome.WRONG_SCOPE, False, f"receipt is authentic but {field} scope does not match")
+                    return authenticated_result(VerificationOutcome.WRONG_SCOPE, False, f"receipt is authentic and issued but {field} scope does not match", issued=True, signer_authorized=True)
         if expected_status is not None:
             status = expected_status.value if isinstance(expected_status, ReceiptStatus) else str(expected_status)
             if item.custody_state != status:
-                return authenticated_result(VerificationOutcome.WRONG_STATUS, False, "receipt is authentic but lifecycle status does not match the requested status")
-        return authenticated_result(VerificationOutcome.VALID, True, f"receipt is authentic; lifecycle={item.custody_state}; admission_ready=false")
+                return authenticated_result(VerificationOutcome.WRONG_STATUS, False, "receipt is authentic and issued but lifecycle status does not match the requested status", issued=True, signer_authorized=True)
+        return authenticated_result(VerificationOutcome.VALID, True, f"receipt is authentic and issued; lifecycle={item.custody_state}; admission_ready=false", issued=True, signer_authorized=True)
 
     def authorize_recovery(
         self, *, stream_id: str, previous_lineage_id: str, target_lineage_id: str,
