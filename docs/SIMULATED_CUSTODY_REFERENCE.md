@@ -40,14 +40,15 @@ A position row represents an active PREPARED reservation or a committed position
 
 Verification outcome precedence is deterministic:
 1. Receipt schema, authority, simulator algorithm, and signature validation.
-2. Authenticated journal/state reconstruction and exact receipt issuance lookup.
+2. Begin one SQLite read transaction, reconstruct authenticated journal/state, and look up exact receipt issuance.
 3. Revoked signing key, inactive signing key, then stale authority epoch.
 4. Missing issuance record.
 5. For recovery authorization receipts: missing authorization record, consumed authorization, then stale source floor.
-6. For PREPARED receipts: exact live reservation; otherwise COMMITTED/REJECTED transaction completion yields `RESERVATION_NOT_ACTIVE`; a still-PREPARED reservation at or beyond its lease boundary yields `EXPIRED`; remaining lifecycle mismatches yield `WRONG_STATUS` when a status was requested.
-7. For recovery authorization leases: `EXPIRED` at `now >= lease_expires_at`.
-8. Caller-requested operation/scope/status checks, followed by `require_current` contract validation.
-9. Committed checkpoint current-floor comparison, producing `AUTHENTIC_CURRENT`, `AUTHENTIC_HISTORICAL`, or `STALE_FLOOR` when currentness is required.
+6. Validate the `require_current` contract. It is accepted only for committed checkpoint receipts; other receipt types return `WRONG_STATUS` here (unless an earlier, more specific signer or recovery-authorization outcome already applied).
+7. For PREPARED receipts: exact live reservation returns `VALID` with `reservation_active=true`; a COMMITTED or REJECTED transaction returns `RESERVATION_NOT_ACTIVE` even if the original lease has since elapsed; a transaction that reached EXPIRED, or a still-PREPARED transaction at or beyond its lease boundary, returns `EXPIRED`; remaining lifecycle mismatches return `WRONG_STATUS` when a status was requested.
+8. For recovery authorization leases: `EXPIRED` at `now >= lease_expires_at`.
+9. Caller-requested operation/scope/status checks.
+10. Committed checkpoint current-floor comparison, producing `AUTHENTIC_CURRENT`, `AUTHENTIC_HISTORICAL`, or `STALE_FLOOR` when currentness is required.
 
 The first matching outcome is the summary outcome; it does not erase other facts. Consumers must inspect the separate `authenticated`, `issued`, `signer_authorized`, `lifecycle_status`, `reservation_active`, and `admission_ready` fields rather than treating the outcome as a complete multidimensional state vector. `admission_ready` remains false for every result.
 
@@ -60,7 +61,7 @@ A PREPARED receipt whose transaction committed before its lease expired remains 
 - `reservation_active`: true only when a PREPARED receipt is still the transaction's latest lifecycle receipt and its lease remains live;
 - `admission_ready`: always false in this simulator; no AVA admission decision is made here.
 
-An authentic receipt signed by an inactive or revoked key, an old epoch, or a key not authorized for the current authority state is not a currently valid custody receipt. An authentic but unissued receipt is not treated as an authority-issued receipt. A PREPARED receipt is checked against the transaction's latest lifecycle state: only the exact latest PREPARED receipt with an unexpired lease reports `reservation_active=true`; after COMMITTED, EXPIRED, or REJECTED, the old PREPARED receipt remains authentic history but reports `reservation_active=false` and cannot pass an `expected_status=PREPARED` check. A recovery authorization is current only while its exact source stream, lineage, generation, and previous checkpoint digest still match the reconstructed floor; an unconsumed authorization becomes `STALE_FLOOR` after that floor advances. These checks still do not make a COMMITTED receipt sufficient for memory admission.
+An authentic receipt signed by an inactive or revoked key, an old epoch, or a key not authorized for the current authority state is not a currently valid custody receipt. An authentic but unissued receipt is not treated as an authority-issued receipt. A PREPARED receipt is checked against the transaction's latest lifecycle state: only the exact latest PREPARED receipt with an unexpired lease reports `reservation_active=true`; after COMMITTED or REJECTED, the old PREPARED receipt remains authentic history and returns `RESERVATION_NOT_ACTIVE` even when `expected_status=PREPARED` is supplied. If the transaction itself reached EXPIRED, or it remains PREPARED at/after its lease boundary, the old receipt returns `EXPIRED`. In all cases its `reservation_active` field is false. A recovery authorization is current only while its exact source stream, lineage, generation, and previous checkpoint digest still match the reconstructed floor; an unconsumed authorization becomes `STALE_FLOOR` after that floor advances. These checks still do not make a COMMITTED receipt sufficient for memory admission.
 
 ## Journal lifecycle and recovery issuance rules
 
