@@ -197,9 +197,9 @@ class AnchoredColdLog:
             finally:
                 os.close(fd)
             cls._fsync_directory(target.parent)
-            unsigned = AnchorSnapshot(stream_id, 0, 0, cls.GENESIS, "pending", "00")
+            initial = AnchorProposal(stream_id, 0, 0, cls.GENESIS)
             try:
-                authority.provision(unsigned)
+                authority.provision(initial)
             except Exception as exc:
                 raise AnchorError("provisioning failed; empty log remains untrusted") from exc
         return cls(target, stream_id, authority)
