@@ -98,8 +98,9 @@ def test_prepare_commit_floor_and_durable_journal_are_atomic(tmp_path):
     prepared, committed = prepare_commit(auth)
     assert prepared.custody_mode == committed.custody_mode == CUSTODY_MODE
     prepared_result = auth.verify_receipt(prepared, expected_status=ReceiptStatus.PREPARED)
-    assert prepared_result.outcome == VerificationOutcome.WRONG_STATUS
-    assert prepared_result.valid is False
+    assert prepared_result.outcome == VerificationOutcome.RESERVATION_NOT_ACTIVE
+    assert prepared_result.valid is True
+    assert prepared_result.reservation_active is False
     assert auth.verify_receipt(prepared, expected_status=ReceiptStatus.COMMITTED).outcome == VerificationOutcome.WRONG_STATUS
     current = auth.verify_receipt(committed, expected_status=ReceiptStatus.COMMITTED)
     assert current.valid and current.outcome == VerificationOutcome.AUTHENTIC_CURRENT
