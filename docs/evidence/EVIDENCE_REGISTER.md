@@ -55,4 +55,4 @@ DESIGN, IMPLEMENTED, TESTED, MEASURED, INDEPENDENTLY REVIEWED, CERTIFIED, OPEN, 
 - PR #14 — merged: owner approval is bound to the exact verified manifest.
 - PR #15 — merged: ledger payload isolation and rejection of non-standard JSON numbers.
 - PR #16 — merged: COLD reader total-byte budget and incomplete-read exactness.
-- PR #6–#12 — open draft stack on separate custody-reference branches; not part of main. PR #12 exact head f342faa829c159ac643fe6e345a4cd978aac56f4 passed CI run #188 with 159 full-suite tests, including 84 focused SIMULATED_CUSTODY tests. This is simulator evidence only.
+- PRs #6–#12 — closed as merged into a sequence of non-main custody-reference branches; none of those merges is into main. The final PR #12 head f342faa829c159ac643fe6e345a4cd978aac56f4 passed CI run #188 with 159 full-suite tests, including 84 focused SIMULATED_CUSTODY tests. This is simulator evidence only; the custody-authority implementation remains outside main.
