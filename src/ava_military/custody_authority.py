@@ -565,6 +565,7 @@ class SimulatedCustodyAuthority:
         for row, payload in events:
             event_type = row["event_type"]
             txid = row["transaction_id"]
+            receipt: CustodyReceipt | None = None
             receipt_id = payload.get("receipt_id")
             if receipt_id is not None:
                 if not isinstance(receipt_id, str) or receipt_id in referenced_receipts:
