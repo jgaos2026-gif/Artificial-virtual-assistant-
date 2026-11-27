@@ -35,6 +35,13 @@ GitHub Actions workflow: `tests`, job: `unit-tests`, Python 3.12.
    - Commit: `0e3e6e0d6b7dfeb3670ee9bde754cdcd142b4acd`
    - Result: success; checkout, Python setup, dependency installation, editable package installation, and pytest all completed; pytest log reported **49 passed in 0.33s**.
 
+
+3. Unsigned checkpoint proposal boundary refinement:
+   - Run: https://github.com/jgaos2026-gif/Artificial-virtual-assistant-/actions/runs/46045723485
+   - Commit: `7b5642cc80efd6167845c6f15fff1e772ea7a150`
+   - Result: success; pytest log reported **49 passed in 0.68s**.
+   - This revision separates unsigned `AnchorProposal` requests from authority-issued signed `AnchorSnapshot` receipts, preventing callers from supplying/reusing a stale signature as the next checkpoint's signature.
+
 These results prove the repository's current reference test suite passed on the recorded commit. They do not prove independent production anti-rollback protection, hardware behavior, cross-host failure-domain separation, or integrated OASIS qualification.
 
 ## Anchor and wake test coverage
