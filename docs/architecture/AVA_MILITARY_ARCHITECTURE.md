@@ -79,6 +79,22 @@ Every capability package declares:
 
 New functions are admitted add-only. Core code is not rewritten to install a capability. Candidate Bricks are quarantined, inspected, tested, verified, validated, certified, and authorized before activation.
 
+## 7A. Reference Clip Brick: memory and affective physiology
+
+The add-only research package `ava.memory-affective-physiology` is defined in
+`MEMORY_AFFECTIVE_PHYSIOLOGY_CLIP_BRICK.md` and implemented as the isolated
+`ava_military.physiology` reference module. It provides bounded HOT/WARM
+caches, append-only COLD event framing, non-destructive contradiction links,
+bounded affective resource modulation, SIMULATED_STATE dream outputs, and a
+wake-verification gate.
+
+This Brick is not yet registered with or activated by a production OASIS
+runtime. Its certification identifier is a reference field, not a cryptographic
+certificate. It does not implement SB712 witness independence, production
+identity, protected key custody, tamper-proof storage, or full sleep scheduling.
+The affective state is deliberately excluded from trust, authorization,
+certification, payment, and protected memory admission interfaces.
+
 ## 8. Immune topology
 
 The intended Node Brigade separates sentinel, verifier, validator, certifier, containment, recovery, and observer responsibilities. Phoenix coordinates patrol and recovery but is not a root authority. Online nodes are untrusted data sources; they do not directly access the offline reasoning process, protected core, permissions, or trusted memory.
