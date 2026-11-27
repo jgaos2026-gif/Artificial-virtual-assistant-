@@ -98,8 +98,9 @@ def test_prepare_commit_floor_and_durable_journal_are_atomic(tmp_path):
     prepared, committed = prepare_commit(auth)
     assert prepared.custody_mode == committed.custody_mode == CUSTODY_MODE
     prepared_result = auth.verify_receipt(prepared, expected_status=ReceiptStatus.PREPARED)
-    assert prepared_result.outcome == VerificationOutcome.WRONG_STATUS
-    assert prepared_result.valid is False
+    assert prepared_result.outcome == VerificationOutcome.RESERVATION_NOT_ACTIVE
+    assert prepared_result.valid is True
+    assert prepared_result.reservation_active is False
     assert auth.verify_receipt(prepared, expected_status=ReceiptStatus.COMMITTED).outcome == VerificationOutcome.WRONG_STATUS
     current = auth.verify_receipt(committed, expected_status=ReceiptStatus.COMMITTED)
     assert current.valid and current.outcome == VerificationOutcome.AUTHENTIC_CURRENT
@@ -1116,9 +1117,11 @@ def test_prepared_receipt_is_not_live_after_commit(tmp_path):
     assert historical.valid and historical.authenticated and historical.issued
     assert historical.reservation_active is False
     assert historical.admission_ready is False
-    assert auth.verify_receipt(
+    after_lease = auth.verify_receipt(
         prepared, expected_status=ReceiptStatus.PREPARED,
-    ).outcome == VerificationOutcome.WRONG_STATUS
+    )
+    assert after_lease.outcome == VerificationOutcome.RESERVATION_NOT_ACTIVE
+    assert after_lease.reservation_active is False
     assert auth.verify_receipt(committed).outcome == VerificationOutcome.AUTHENTIC_CURRENT
 
 
@@ -1158,7 +1161,7 @@ def test_prepared_receipt_is_not_live_after_commit_rejection(tmp_path):
     assert result.admission_ready is False
     assert auth.verify_receipt(
         prepared, expected_status=ReceiptStatus.PREPARED,
-    ).outcome == VerificationOutcome.WRONG_STATUS
+    ).outcome == VerificationOutcome.RESERVATION_NOT_ACTIVE
 
 
 def test_require_current_rejects_non_committed_receipt_types(tmp_path):
@@ -1198,3 +1201,118 @@ def test_live_prepared_receipt_explicitly_reports_active_reservation(tmp_path):
     assert result.reservation_active is True
     assert result.admission_ready is False
     assert auth.verify_receipt(prepared, require_current=True).outcome == VerificationOutcome.WRONG_STATUS
+
+
+
+def test_committed_prepared_receipt_stays_reservation_not_active_after_lease_expires(tmp_path):
+    clock = Clock()
+    auth = make_authority(tmp_path, clock=clock, lease=5)
+    prepared, committed = prepare_commit(auth, tx="committed-before-expiry")
+    assert clock() < prepared.lease_expires_at
+    clock.advance(10)
+
+    without_expected = auth.verify_receipt(prepared)
+    with_expected = auth.verify_receipt(
+        prepared, expected_status=ReceiptStatus.PREPARED,
+    )
+    for result in (without_expected, with_expected):
+        assert result.outcome == VerificationOutcome.RESERVATION_NOT_ACTIVE
+        assert result.valid and result.authenticated and result.issued
+        assert result.reservation_active is False
+        assert result.admission_ready is False
+    assert auth.verify_receipt(committed).outcome == VerificationOutcome.AUTHENTIC_CURRENT
+
+
+def test_expired_reservation_reacquisition_survives_restart_without_old_owner(tmp_path):
+    clock = Clock()
+    auth = make_authority(tmp_path, clock=clock, lease=5)
+    first_candidate = candidate()
+    prepared_a = auth.prepare(first_candidate, "reservation-A")
+    clock.advance(5)
+    prepared_b = auth.prepare(first_candidate, "reservation-B")
+
+    # The second prepare expires and releases A before acquiring the same position.
+    assert auth.query_transaction("reservation-A").status == ReceiptStatus.EXPIRED.value
+    assert auth.query_transaction("reservation-B").status == ReceiptStatus.PREPARED.value
+    assert auth.verify_receipt(prepared_a).outcome == VerificationOutcome.EXPIRED
+    assert auth.verify_receipt(prepared_a).reservation_active is False
+    assert auth.verify_receipt(prepared_b).reservation_active is True
+
+    restarted = SimulatedCustodyAuthority(
+        tmp_path / "custody.sqlite3", authority_id="test-custody",
+        keys=KEYS, active_key_id="key-a", clock=clock, lease_seconds=5,
+    )
+    assert restarted.query_transaction("reservation-A").status == ReceiptStatus.EXPIRED.value
+    assert restarted.query_transaction("reservation-B").status == ReceiptStatus.PREPARED.value
+    old_result = restarted.verify_receipt(prepared_a)
+    new_result = restarted.verify_receipt(prepared_b)
+    assert old_result.outcome == VerificationOutcome.EXPIRED
+    assert old_result.reservation_active is False
+    assert new_result.outcome == VerificationOutcome.VALID
+    assert new_result.reservation_active is True
+    assert new_result.admission_ready is False
+
+
+def test_receipt_verification_uses_one_snapshot_during_concurrent_floor_advance(tmp_path, monkeypatch):
+    import threading
+
+    auth = make_authority(tmp_path)
+    _, first_commit = prepare_commit(auth, tx="snapshot-first")
+    next_candidate = candidate(
+        b"snapshot-second", seq=1, previous=first_commit.checkpoint_digest,
+    )
+    prepared = auth.prepare(next_candidate, "snapshot-second")
+    evidence = PersistenceEvidence(
+        "snapshot-second", prepared.reservation_id,
+        next_candidate.checkpoint_digest, b"snapshot-second", "snapshot-evidence",
+    )
+
+    snapshot_ready = threading.Event()
+    release_reader = threading.Event()
+    writer_started = threading.Event()
+    writer_done = threading.Event()
+    original_verify_state = auth._verify_state
+
+    def pause_after_snapshot(conn):
+        original_verify_state(conn)
+        if threading.current_thread().name == "receipt-snapshot-reader":
+            snapshot_ready.set()
+            if not release_reader.wait(5):
+                raise AssertionError("test did not release snapshot reader")
+
+    monkeypatch.setattr(auth, "_verify_state", pause_after_snapshot)
+    verification_results = []
+    verification_errors = []
+
+    def verify_old_current_receipt():
+        try:
+            verification_results.append(auth.verify_receipt(first_commit))
+        except Exception as exc:
+            verification_errors.append(exc)
+
+    def advance_floor():
+        writer_started.set()
+        try:
+            auth.commit("snapshot-second", prepared.reservation_id, evidence)
+        finally:
+            writer_done.set()
+
+    reader = threading.Thread(target=verify_old_current_receipt, name="receipt-snapshot-reader")
+    reader.start()
+    assert snapshot_ready.wait(5), "verification did not establish its read snapshot"
+    writer = threading.Thread(target=advance_floor, name="concurrent-floor-writer")
+    writer.start()
+    assert writer_started.wait(5)
+    # DELETE-journal mode serializes the writer behind the active read snapshot.
+    assert not writer_done.wait(0.1), "floor writer committed inside the verification snapshot"
+    release_reader.set()
+    reader.join(5)
+    writer.join(5)
+    assert not reader.is_alive() and not writer.is_alive()
+    assert verification_errors == []
+    assert len(verification_results) == 1
+    assert verification_results[0].outcome == VerificationOutcome.AUTHENTIC_CURRENT
+    assert verification_results[0].valid and verification_results[0].issued
+    assert verification_results[0].admission_ready is False
+    assert writer_done.is_set()
+    assert auth.verify_receipt(first_commit).outcome == VerificationOutcome.AUTHENTIC_HISTORICAL
