@@ -1469,6 +1469,18 @@ class SimulatedCustodyAuthority:
                         issued=True, signer_authorized=True,
                     )
 
+            # require_current applies only to committed checkpoint receipts.
+            if require_current and not (
+                item.custody_state == ReceiptStatus.COMMITTED.value
+                and item.operation == "commit"
+                and item.stream_id is not None
+            ):
+                return authenticated_result(
+                    VerificationOutcome.WRONG_STATUS, False,
+                    "require_current applies only to committed checkpoint receipts",
+                    issued=True, signer_authorized=True,
+                )
+
             if item.custody_state == ReceiptStatus.PREPARED.value and item.operation == "prepare":
                 tx = conn.execute(
                     "SELECT status, receipt_json, lease_expires_at FROM transactions WHERE transaction_id=?",
@@ -1536,17 +1548,6 @@ class SimulatedCustodyAuthority:
                 status = expected_status.value if isinstance(expected_status, ReceiptStatus) else str(expected_status)
                 if item.custody_state != status:
                     return authenticated_result(VerificationOutcome.WRONG_STATUS, False, "receipt is authentic and issued but lifecycle status does not match the requested status", issued=True, signer_authorized=True)
-            # require_current applies only to committed checkpoint receipts.
-            if require_current and not (
-                item.custody_state == ReceiptStatus.COMMITTED.value
-                and item.operation == "commit"
-                and item.stream_id is not None
-            ):
-                return authenticated_result(
-                    VerificationOutcome.WRONG_STATUS, False,
-                    "require_current applies only to committed checkpoint receipts",
-                    issued=True, signer_authorized=True,
-                )
             if item.custody_state == ReceiptStatus.COMMITTED.value and item.stream_id is not None:
                 floor = conn.execute("SELECT * FROM floors WHERE stream_id=?", (item.stream_id,)).fetchone()
                 is_current = bool(
