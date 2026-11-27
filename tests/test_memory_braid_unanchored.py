@@ -107,3 +107,21 @@ def test_checkpoint_must_match_current_snapshot_not_just_valid_prefix(tmp_path):
     report=classifier.classify(records,snap,baseline,stale,consistent_read_guaranteed=True)
     assert report.authority_verified is False
     assert report.anchoring_eligible is False
+
+
+def test_reader_mints_checkpoint_session_inside_shared_lock(tmp_path):
+    from ava_military.avo_provenance_gate import build_avo_provenance_summary
+    records, snap, baseline, cp, classifier = setup_auth(tmp_path)
+    path = tmp_path / "cold.jsonl"
+    path.write_text("".join(json.dumps(row) + "\n" for row in records))
+    checks = []
+    view = read_braided_stream(
+        path, classifier=classifier, snapshot=snap, baseline=baseline, checkpoint=cp,
+        pre_read_check=lambda: checks.append("pre") or True,
+        post_read_check=lambda: checks.append("post") or True,
+    )
+    assert checks == ["pre", "post"]
+    assert view.consistent_read_guaranteed
+    assert view.read_session is not None and view.read_session.current_across_read
+    summary = build_avo_provenance_summary(view)
+    assert summary.checkpoint_current_at_read
