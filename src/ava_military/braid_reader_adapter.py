@@ -131,6 +131,8 @@ def read_braided_stream(
         if data is None:
             consistent = False
             records, complete, omitted, diags = [], False, 0, ["pre-read custody check failed"]
+        else:
+            records, complete, omitted, diags = data
     elif lock is not None:
         with lock.exclusive():
             records, complete, omitted, diags = _read_jsonl(
