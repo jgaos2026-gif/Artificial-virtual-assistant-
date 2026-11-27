@@ -54,6 +54,10 @@ class VerificationOutcome(str, Enum):
     INVALID_CANONICALIZATION = "INVALID_CANONICALIZATION"
     UNAUTHORIZED_KEY = "UNAUTHORIZED_KEY"
     UNISSUED_RECEIPT = "UNISSUED_RECEIPT"
+    AUTHENTIC_HISTORICAL = "AUTHENTIC_HISTORICAL"
+    AUTHENTIC_CURRENT = "AUTHENTIC_CURRENT"
+    STALE_FLOOR = "STALE_FLOOR"
+    CONSUMED_AUTHORIZATION = "CONSUMED_AUTHORIZATION"
 
 
 class CustodyError(RuntimeError):
@@ -1353,6 +1357,7 @@ class SimulatedCustodyAuthority:
         expected_status: str | ReceiptStatus | None = None,
         expected_operation: str | None = None,
         expected_scope: Mapping[str, Any] | None = None,
+        require_current: bool = False,
     ) -> VerificationResult:
         try:
             item = receipt if isinstance(receipt, CustodyReceipt) else CustodyReceipt.from_dict(receipt)
@@ -1414,6 +1419,16 @@ class SimulatedCustodyAuthority:
             raise
         finally:
             conn.close()
+        if item.custody_state == ReceiptStatus.RECOVERY_AUTHORIZED.value and item.recovery_authorization_id:
+            conn = self._connect()
+            try:
+                auth_row = conn.execute("SELECT consumed_by FROM recovery_authorizations WHERE recovery_authorization_id=?", (item.recovery_authorization_id,)).fetchone()
+                if auth_row is None:
+                    return authenticated_result(VerificationOutcome.UNISSUED_RECEIPT, False, "recovery authorization receipt has no matching authorization record", issued=True)
+                if auth_row["consumed_by"] is not None:
+                    return authenticated_result(VerificationOutcome.CONSUMED_AUTHORIZATION, False, "recovery authorization was already consumed by a committed transition", issued=True, signer_authorized=True)
+            finally:
+                conn.close()
         if item.lease_expires_at is not None and item.custody_state in (ReceiptStatus.PREPARED.value, ReceiptStatus.RECOVERY_AUTHORIZED.value):
             if self._now() >= item.lease_expires_at:
                 return authenticated_result(VerificationOutcome.EXPIRED, False, "receipt is authentic and issued but its reservation lease expired", issued=True, signer_authorized=True)
@@ -1427,6 +1442,18 @@ class SimulatedCustodyAuthority:
             status = expected_status.value if isinstance(expected_status, ReceiptStatus) else str(expected_status)
             if item.custody_state != status:
                 return authenticated_result(VerificationOutcome.WRONG_STATUS, False, "receipt is authentic and issued but lifecycle status does not match the requested status", issued=True, signer_authorized=True)
+        if item.custody_state == ReceiptStatus.COMMITTED.value and item.stream_id is not None:
+            conn = self._connect()
+            try:
+                floor = conn.execute("SELECT * FROM floors WHERE stream_id=?", (item.stream_id,)).fetchone()
+                is_current = bool(floor is not None and floor["receipt_id"] == item.receipt_id and floor["lineage_id"] == item.lineage_id and floor["generation"] == item.generation and floor["sequence_no"] == item.sequence_no and floor["checkpoint_digest"] == item.checkpoint_digest and floor["previous_checkpoint_digest"] == item.previous_checkpoint_digest)
+            finally:
+                conn.close()
+            if is_current:
+                return authenticated_result(VerificationOutcome.AUTHENTIC_CURRENT, True, "receipt is authentic, issued, and matches the reconstructed current floor; admission_ready=false", issued=True, signer_authorized=True)
+            if require_current:
+                return authenticated_result(VerificationOutcome.STALE_FLOOR, False, "receipt is authentic and issued but superseded by the reconstructed current floor", issued=True, signer_authorized=True)
+            return authenticated_result(VerificationOutcome.AUTHENTIC_HISTORICAL, True, "receipt is authentic and issued historical evidence; a later floor supersedes it; admission_ready=false", issued=True, signer_authorized=True)
         return authenticated_result(VerificationOutcome.VALID, True, f"receipt is authentic and issued; lifecycle={item.custody_state}; admission_ready=false", issued=True, signer_authorized=True)
 
     def authorize_recovery(
