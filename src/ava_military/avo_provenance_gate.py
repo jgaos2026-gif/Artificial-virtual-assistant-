@@ -84,7 +84,7 @@ def execute_guarded_read(
             except BaseException as exc:
                 post_error = exc
     if read_error is not None and post_error is not None:
-        raise ExceptionGroup("read and post-read currency check both failed", [read_error, post_error])
+        raise BaseExceptionGroup("read and post-read currency check both failed", [read_error, post_error])
     if read_error is not None:
         raise read_error
     if post_error is not None:
@@ -148,6 +148,8 @@ def _raw_index_map(records: Sequence[Any]) -> dict[int, Mapping[str, Any]]:
 
 
 def build_avo_provenance_summary(view: Any, *, read_session: Optional[CheckpointReadSession] = None):
+    if read_session is None:
+        read_session = getattr(view, "read_session", None)
     report = view.report
     results: Sequence[RecordResult] = tuple(report.results)
     raw_by_index = _raw_index_map(tuple(getattr(view, "records", ())))
