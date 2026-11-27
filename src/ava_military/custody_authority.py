@@ -1298,6 +1298,7 @@ class SimulatedCustodyAuthority:
         self._fault("read_floor.before_response")
         conn = self._connect()
         try:
+            conn.execute("BEGIN")
             self._verify_state(conn)
             key_id, key, epoch = self._active_key(conn)
             row = conn.execute("SELECT * FROM floors WHERE stream_id=?", (stream_id,)).fetchone()
@@ -1331,6 +1332,7 @@ class SimulatedCustodyAuthority:
             return False
         conn = self._connect()
         try:
+            conn.execute("BEGIN")
             self._verify_state(conn)
             if self._meta_get(conn, "authority_revoked") == "1":
                 return False
@@ -1703,6 +1705,7 @@ class SimulatedCustodyAuthority:
         self._fault("query_transaction.before_response")
         conn = self._connect()
         try:
+            conn.execute("BEGIN")
             self._verify_state(conn)
             row = conn.execute("SELECT * FROM transactions WHERE transaction_id=?", (transaction_id,)).fetchone()
             if row is not None:
@@ -1736,6 +1739,7 @@ class SimulatedCustodyAuthority:
         """Return authenticated event history; intended for tests and diagnostics."""
         conn = self._connect()
         try:
+            conn.execute("BEGIN")
             self._verify_state(conn)
             if transaction_id is None:
                 rows = conn.execute("SELECT * FROM journal_events ORDER BY event_no").fetchall()
