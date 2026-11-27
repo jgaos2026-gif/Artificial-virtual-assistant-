@@ -24,6 +24,12 @@ def _timeout_worker(path, started, result):
         result.put("timeout")
 
 
+def _crash_while_holding_lock(path, acquired):
+    with CrossProcessAdvisoryLock(path).exclusive():
+        acquired.set()
+        os._exit(0)
+
+
 def test_lock_identity_is_canonical_for_reader_and_writer(tmp_path):
     target = tmp_path / "cold.jsonl"
     writer = TransactionalColdLog(target)
@@ -61,6 +67,20 @@ def test_lock_timeout_fails_closed_when_another_process_holds_lock(tmp_path):
         assert result.get(timeout=5) == "timeout"
     proc.join(5)
     assert proc.exitcode == 0
+
+
+def test_kernel_releases_lock_after_holder_crashes_without_cleanup(tmp_path):
+    target = tmp_path / "cold.jsonl"
+    ctx = mp.get_context("spawn")
+    acquired = ctx.Event()
+    proc = ctx.Process(target=_crash_while_holding_lock, args=(str(target), acquired))
+    proc.start()
+    assert acquired.wait(5), "child never acquired lock"
+    proc.join(5)
+    assert proc.exitcode == 0
+    # The persistent lock file remains; the OS lock itself was released on exit.
+    with CrossProcessAdvisoryLock(target, timeout=1).exclusive():
+        assert True
 
 
 def _uncooperative_append(path, ready, proceed):
