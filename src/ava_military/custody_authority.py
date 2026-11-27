@@ -524,6 +524,8 @@ class SimulatedCustodyAuthority:
     def _verify_state(self, conn: sqlite3.Connection) -> None:
         """Reconstruct custody state from authenticated events and compare every mutable table."""
         events = self._verified_journal_events(conn)
+        if self._meta_get(conn, "authority_id") != self.authority_id:
+            raise CustodyIntegrityError("authority identity metadata mismatch")
         receipt_rows = conn.execute("SELECT * FROM receipts ORDER BY receipt_id").fetchall()
         receipts: dict[str, CustodyReceipt] = {}
         for row in receipt_rows:
@@ -532,8 +534,16 @@ class SimulatedCustodyAuthority:
                 raise CustodyIntegrityError("receipt history identity mismatch")
             if row["transaction_id"] != receipt.transaction_id or row["custody_state"] != receipt.custody_state:
                 raise CustodyIntegrityError("receipt history metadata disagrees with signed receipt")
-            if not self._verify_signature_only(receipt):
-                raise CustodyIntegrityError("receipt history contains an unauthenticated receipt")
+            if (
+                not self._verify_signature_only(receipt)
+                or receipt.authority_id != self.authority_id
+                or receipt.custody_mode != CUSTODY_MODE
+                or receipt.schema_version != SCHEMA_VERSION
+                or receipt.canonicalization_version != CANONICALIZATION_VERSION
+                or receipt.domain_separator != DOMAIN_SEPARATOR
+                or receipt.signature_algorithm != "HMAC-SHA256-TEST-ONLY"
+            ):
+                raise CustodyIntegrityError("receipt history contains an unauthenticated or wrong-authority receipt")
             if receipt.receipt_id in receipts:
                 raise CustodyIntegrityError("duplicate receipt history identity")
             receipts[receipt.receipt_id] = receipt
@@ -566,6 +576,15 @@ class SimulatedCustodyAuthority:
             event_type = row["event_type"]
             txid = row["transaction_id"]
             receipt: CustodyReceipt | None = None
+            if active_key_id in revoked:
+                raise CustodyIntegrityError("journal attempts to continue with a revoked active key")
+            expected_event_key = (
+                payload.get("new_active_key_id")
+                if event_type == "AUTHORITY_KEY_REVOKED"
+                else active_key_id
+            )
+            if row["key_id"] != expected_event_key or expected_event_key in revoked:
+                raise CustodyIntegrityError("journal event was not authenticated by the authorized active key")
             receipt_id = payload.get("receipt_id")
             if receipt_id is not None:
                 if not isinstance(receipt_id, str) or receipt_id in referenced_receipts:
@@ -677,7 +696,7 @@ class SimulatedCustodyAuthority:
                 new_active = payload.get("new_active_key_id")
                 next_epoch = payload.get("authority_epoch")
                 if (
-                    not isinstance(target, str) or target in revoked
+                    not isinstance(target, str) or target not in self._keys or target in revoked
                     or next_epoch != epoch + 1
                     or not isinstance(new_active, str) or new_active not in self._keys
                     or new_active == target or new_active in revoked
