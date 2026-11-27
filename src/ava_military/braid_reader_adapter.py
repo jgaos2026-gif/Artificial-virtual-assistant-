@@ -26,24 +26,46 @@ class BraidedStreamSnapshotView:
     read_session: Any = None
 
 
-def _read_jsonl(path, *, max_records=100000, max_line_bytes=1048576):
-    """Read bounded JSONL; omitted count is a lower bound after cutoff."""
+# Measured: a 16.8 MB file of minimal records ({\"a\":1} newline) peaked at ~403 MB of
+# Python allocations (~24x). 16 MiB raw therefore bounds worst-case parse memory
+# to roughly 400 MB on the 8 GB target. Raise it explicitly if a COLD log needs more.
+DEFAULT_MAX_TOTAL_BYTES = 16 * 1024 * 1024
+
+
+def _read_jsonl(path, *, max_records=100000, max_line_bytes=1048576,
+                max_total_bytes=DEFAULT_MAX_TOTAL_BYTES):
+    """Read bounded JSONL; omitted count is a lower bound after cutoff.
+
+    max_total_bytes caps raw bytes read from disk, enforced before parsing.
+    max_records * max_line_bytes alone allows ~105 GB at the defaults.
+    Hitting the budget marks the read incomplete and the partial trailing
+    record is never parsed.
+    """
     if type(max_records) is not int or max_records < 1:
         raise ValueError("max_records must be positive")
     if type(max_line_bytes) is not int or max_line_bytes < 1:
         raise ValueError("max_line_bytes must be positive")
+    if type(max_total_bytes) is not int or max_total_bytes < 1:
+        raise ValueError("max_total_bytes must be positive")
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     records, diagnostics, line = [], [], bytearray()
     line_no = omitted = 0
     complete = True
-    oversized = cutoff = False
+    oversized = cutoff = budget_hit = False
+    total = 0
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise ValueError("COLD source must be a regular file")
         while True:
-            chunk = os.read(fd, 65536)
+            remaining = max_total_bytes - total
+            if remaining <= 0:
+                if os.read(fd, 1):  # more data exists beyond the budget
+                    budget_hit = True
+                break
+            chunk = os.read(fd, min(65536, remaining))
             if not chunk:
                 break
+            total += len(chunk)
             pos = 0
             while pos < len(chunk):
                 nl = chunk.find(b"\n", pos)
@@ -79,7 +101,12 @@ def _read_jsonl(path, *, max_records=100000, max_line_bytes=1048576):
                     pos = nl + 1
                 else:
                     pos = len(chunk)
-        if line_no < max_records and not oversized and line:
+        if budget_hit:
+            complete = False
+            diagnostics.append(f"total byte budget {max_total_bytes} exceeded; read stopped")
+            if line:
+                diagnostics.append(f"line {line_no} cut off by byte budget; not parsed")
+        elif line_no < max_records and not oversized and line:
             try:
                 item = json.loads(line.decode("utf-8"))
                 if not isinstance(item, dict):
@@ -103,6 +130,7 @@ def read_braided_stream(
     path, *, classifier: ColdHistoryProvenanceClassifier, snapshot: ColdSnapshot,
     baseline: AnchorBaseline, checkpoint: MonotonicCheckpoint,
     max_records=100000, max_line_bytes=1048576, sync_guard=None, cold_log=None,
+    max_total_bytes=DEFAULT_MAX_TOTAL_BYTES,
     pre_read_check=None, post_read_check=None,
 ):
     """Read under shared lock; optional custody checks mint a read-session result."""
@@ -128,7 +156,7 @@ def read_braided_stream(
         from .avo_provenance_gate import execute_guarded_read
         data, read_session = execute_guarded_read(
             lock, pre_read_check,
-            lambda: _read_jsonl(path, max_records=max_records, max_line_bytes=max_line_bytes),
+            lambda: _read_jsonl(path, max_records=max_records, max_line_bytes=max_line_bytes, max_total_bytes=max_total_bytes),
             post_read_check,
         )
         if data is None:
@@ -139,16 +167,16 @@ def read_braided_stream(
     elif lock is not None:
         with lock.exclusive():
             records, complete, omitted, diags = _read_jsonl(
-                path, max_records=max_records, max_line_bytes=max_line_bytes
+                path, max_records=max_records, max_line_bytes=max_line_bytes, max_total_bytes=max_total_bytes
             )
     elif callable(sync_guard):
         with sync_guard():
             records, complete, omitted, diags = _read_jsonl(
-                path, max_records=max_records, max_line_bytes=max_line_bytes
+                path, max_records=max_records, max_line_bytes=max_line_bytes, max_total_bytes=max_total_bytes
             )
     else:
         records, complete, omitted, diags = _read_jsonl(
-            path, max_records=max_records, max_line_bytes=max_line_bytes
+            path, max_records=max_records, max_line_bytes=max_line_bytes, max_total_bytes=max_total_bytes
         )
 
     report = classifier.classify(
@@ -163,5 +191,7 @@ def read_braided_stream(
     verified = report.cold_evidence_verified and report.inspection_complete and not omitted
     return BraidedStreamSnapshotView(
         tuple(dict(x) for x in records), report, verified, True, complete,
-        consistent, omitted, False if omitted else True, read_session,
+        # Same rule as the report: an incomplete read can never claim an exact
+        # omitted count (previously the view said True whenever omitted == 0).
+        consistent, omitted, False if omitted or not complete else True, read_session,
     )
