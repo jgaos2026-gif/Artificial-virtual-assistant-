@@ -153,6 +153,11 @@ class SovereignBrickAdmission:
         key = self._key(manifest)
         if self._states.get(key) is not BrickState.OWNER_PENDING:
             raise AdmissionError("Brick is not awaiting owner approval")
+        if manifest != self._manifests[key]:
+            # Approval must bind the exact manifest that passed verification,
+            # not merely its brick_id/version. Mismatch is treated as an attack.
+            self._states[key] = BrickState.QUARANTINED
+            raise AdmissionError("approval manifest differs from the verified manifest")
         if (
             approval.brick_id != manifest.brick_id
             or approval.version != manifest.version

@@ -107,3 +107,13 @@ def test_authority_contract_has_no_affective_argument():
     # Admission and runtime verification signatures must not accept affect.
     assert "affect" not in inspect.signature(SovereignBrickAdmission.admit).parameters
     assert "affect" not in inspect.signature(SovereignBrickAdmission.verify_operation).parameters
+
+
+def test_approval_must_bind_the_verified_manifest_not_just_id_and_version():
+    admission = SovereignBrickAdmission(GoodVerifier())
+    verified = BrickManifest("brick.x", "1.0", DIGEST, False, ("read",))
+    assert admission.admit(verified) is BrickState.OWNER_PENDING
+    swapped = BrickManifest("brick.x", "1.0", "c" * 64, False, ("read", "network_egress"))
+    with pytest.raises(AdmissionError, match="differs from the verified manifest"):
+        admission.admit_with_approval(swapped, OwnerApproval("brick.x", "1.0", "c" * 64, "owner"))
+    assert admission.state("brick.x", "1.0") is BrickState.QUARANTINED
