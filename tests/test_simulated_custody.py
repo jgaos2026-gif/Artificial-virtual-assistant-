@@ -97,7 +97,9 @@ def test_prepare_commit_floor_and_durable_journal_are_atomic(tmp_path):
     auth = make_authority(tmp_path)
     prepared, committed = prepare_commit(auth)
     assert prepared.custody_mode == committed.custody_mode == CUSTODY_MODE
-    assert auth.verify_receipt(prepared, expected_status=ReceiptStatus.PREPARED).valid
+    prepared_result = auth.verify_receipt(prepared, expected_status=ReceiptStatus.PREPARED)
+    assert prepared_result.outcome == VerificationOutcome.WRONG_STATUS
+    assert prepared_result.valid is False
     assert auth.verify_receipt(prepared, expected_status=ReceiptStatus.COMMITTED).outcome == VerificationOutcome.WRONG_STATUS
     current = auth.verify_receipt(committed, expected_status=ReceiptStatus.COMMITTED)
     assert current.valid and current.outcome == VerificationOutcome.AUTHENTIC_CURRENT
@@ -1077,3 +1079,122 @@ def test_key_holding_attacker_can_forge_simulator_journal_authentication(tmp_pat
     conn.execute("UPDATE meta SET value=? WHERE key='event_head'", (event_hash,)); conn.commit(); conn.close()
     assert auth.read_floor("stream-1").generation == 0
     assert auth.journal_history("key-holder")[-1]["payload"]["attacker_controlled_annotation"] == "forged by test key holder"
+
+
+def test_unconsumed_recovery_authorization_becomes_stale_when_same_lineage_floor_advances(tmp_path):
+    auth = make_authority(tmp_path)
+    _, cp0 = prepare_commit(auth)
+    authorization = auth.authorize_recovery(
+        stream_id="stream-1", previous_lineage_id="lineage-0",
+        target_lineage_id="lineage-1", lineage_parent_id="lineage-0",
+        previous_generation=0, target_generation=1,
+        authorization_proof="simulated-owner-proof",
+    )
+    ordinary_next = candidate(
+        b"ordinary-sequence-1", seq=1, previous=cp0.checkpoint_digest,
+    )
+    prepare_commit(
+        auth, b"ordinary-sequence-1", tx="ordinary-sequence-1", cand=ordinary_next,
+    )
+
+    result = auth.verify_receipt(authorization)
+    assert result.outcome == VerificationOutcome.STALE_FLOOR
+    assert result.valid is False
+    assert result.authenticated is True
+    assert result.issued is True
+    assert result.signer_authorized is True
+    assert result.admission_ready is False
+    assert auth.query_transaction(authorization.transaction_id) is None
+    assert auth.read_floor("stream-1").sequence_no == 1
+
+
+def test_prepared_receipt_is_not_live_after_commit(tmp_path):
+    auth = make_authority(tmp_path)
+    prepared, committed = prepare_commit(auth)
+    historical = auth.verify_receipt(prepared)
+    assert historical.outcome == VerificationOutcome.RESERVATION_NOT_ACTIVE
+    assert historical.valid and historical.authenticated and historical.issued
+    assert historical.reservation_active is False
+    assert historical.admission_ready is False
+    assert auth.verify_receipt(
+        prepared, expected_status=ReceiptStatus.PREPARED,
+    ).outcome == VerificationOutcome.WRONG_STATUS
+    assert auth.verify_receipt(committed).outcome == VerificationOutcome.AUTHENTIC_CURRENT
+
+
+def test_prepared_receipt_is_not_live_after_expiration(tmp_path):
+    clock = Clock()
+    auth = make_authority(tmp_path, clock=clock, lease=5)
+    prepared = auth.prepare(candidate(), "prepared-then-expired")
+    clock.advance(5)
+    evidence = PersistenceEvidence(
+        "prepared-then-expired", prepared.reservation_id,
+        candidate().checkpoint_digest, b"checkpoint-0", "expired-evidence",
+    )
+    expired = auth.commit("prepared-then-expired", prepared.reservation_id, evidence)
+    assert expired.custody_state == ReceiptStatus.EXPIRED.value
+
+    result = auth.verify_receipt(prepared)
+    assert result.outcome == VerificationOutcome.EXPIRED
+    assert result.authenticated and result.issued
+    assert result.reservation_active is False
+    assert result.admission_ready is False
+
+
+def test_prepared_receipt_is_not_live_after_commit_rejection(tmp_path):
+    auth = make_authority(tmp_path)
+    prepared = auth.prepare(candidate(), "prepared-then-rejected")
+    bad_evidence = PersistenceEvidence(
+        "prepared-then-rejected", prepared.reservation_id,
+        candidate().checkpoint_digest, b"wrong-bytes", "bad-evidence",
+    )
+    rejected = auth.commit("prepared-then-rejected", prepared.reservation_id, bad_evidence)
+    assert rejected.custody_state == ReceiptStatus.REJECTED.value
+
+    result = auth.verify_receipt(prepared)
+    assert result.outcome == VerificationOutcome.RESERVATION_NOT_ACTIVE
+    assert result.valid and result.authenticated and result.issued
+    assert result.reservation_active is False
+    assert result.admission_ready is False
+    assert auth.verify_receipt(
+        prepared, expected_status=ReceiptStatus.PREPARED,
+    ).outcome == VerificationOutcome.WRONG_STATUS
+
+
+def test_require_current_rejects_non_committed_receipt_types(tmp_path):
+    auth = make_authority(tmp_path)
+    prepared = auth.prepare(candidate(), "require-current-prepared")
+    prepared_result = auth.verify_receipt(prepared, require_current=True)
+    assert prepared_result.outcome == VerificationOutcome.WRONG_STATUS
+    assert prepared_result.valid is False
+    assert prepared_result.reservation_active is False
+
+    _, committed = prepare_commit(
+        auth, b"second-stream", tx="second-stream",
+        cand=CheckpointCandidate(
+            stream_id="stream-2", lineage_id="lineage-0", generation=0,
+            sequence_no=0, checkpoint_digest=sha256_hex(b"second-stream"),
+            previous_checkpoint_digest="0" * 64,
+        ),
+    )
+    authorization = auth.authorize_recovery(
+        stream_id="stream-2", previous_lineage_id="lineage-0",
+        target_lineage_id="lineage-1", lineage_parent_id="lineage-0",
+        previous_generation=0, target_generation=1,
+        authorization_proof="simulated-owner-proof",
+    )
+    auth_result = auth.verify_receipt(authorization, require_current=True)
+    assert auth_result.outcome == VerificationOutcome.WRONG_STATUS
+    assert auth_result.valid is False
+    assert auth_result.admission_ready is False
+
+
+def test_live_prepared_receipt_explicitly_reports_active_reservation(tmp_path):
+    auth = make_authority(tmp_path)
+    prepared = auth.prepare(candidate(), "live-prepared-reservation")
+    result = auth.verify_receipt(prepared, expected_status=ReceiptStatus.PREPARED)
+    assert result.outcome == VerificationOutcome.VALID
+    assert result.valid and result.authenticated and result.issued
+    assert result.reservation_active is True
+    assert result.admission_ready is False
+    assert auth.verify_receipt(prepared, require_current=True).outcome == VerificationOutcome.WRONG_STATUS
