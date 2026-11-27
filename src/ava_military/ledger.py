@@ -1,8 +1,10 @@
 """Minimal hash-chained evidence ledger reference.
 
-This demonstrates tamper detection within a supplied chain. It is NOT a
-signature system, external anchor, immutable store, or protection against an
-attacker who can rewrite every record and recompute the entire chain.
+This detects changes within a supplied chain. An independently retained
+expected_head_hash is required to detect truncation of an otherwise valid
+prefix. This is NOT a signature system, external anchor, immutable store, or
+protection against an attacker who can rewrite every record and recompute the
+entire chain and the external anchor.
 """
 from __future__ import annotations
 
@@ -10,7 +12,6 @@ import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any
-
 
 GENESIS = "0" * 64
 
@@ -51,7 +52,10 @@ class HashChainLedger:
         return entry
 
     @staticmethod
-    def verify(entries: tuple[LedgerEntry, ...] | list[LedgerEntry]) -> bool:
+    def verify(
+        entries: tuple[LedgerEntry, ...] | list[LedgerEntry],
+        expected_head_hash: str | None = None,
+    ) -> bool:
         previous = GENESIS
         for expected_sequence, entry in enumerate(entries):
             if entry.sequence != expected_sequence:
@@ -61,4 +65,6 @@ class HashChainLedger:
             if calculate_hash(entry.sequence, entry.previous_hash, entry.payload) != entry.entry_hash:
                 return False
             previous = entry.entry_hash
+        if expected_head_hash is not None and previous != expected_head_hash:
+            return False
         return True
