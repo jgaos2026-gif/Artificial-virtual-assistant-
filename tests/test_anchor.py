@@ -5,7 +5,7 @@ import struct
 import pytest
 
 from ava_military.anchor import (
-    AnchorError, AnchorSnapshot, AnchoredColdLog, BrickPin, CompositeWakeVerifier,
+    AnchorError, AnchorProposal, AnchorSnapshot, AnchoredColdLog, BrickPin, CompositeWakeVerifier,
     SpineReceipt,
 )
 
@@ -23,9 +23,13 @@ class MemoryAuthority:
         body = f"{snap.stream_id}|{snap.generation}|{snap.record_count}|{snap.head_hash}|test-authority"
         return hmac.new(KEY, body.encode(), hashlib.sha256).hexdigest()
 
-    def _signed(self, snap):
+    def _signed(self, proposal):
+        snap = AnchorSnapshot(
+            proposal.stream_id, proposal.generation, proposal.record_count,
+            proposal.head_hash, "test-authority", "00",
+        )
         from dataclasses import replace
-        return replace(snap, authority_id="test-authority", signature_hex=self._sign(snap))
+        return replace(snap, signature_hex=self._sign(snap))
 
     def read(self, stream_id):
         return self.value if self.value and self.value.stream_id == stream_id else None
@@ -121,7 +125,7 @@ def test_stale_generation_or_old_anchor_replay_is_rejected(tmp_path):
     assert authority.read("memory-main").generation == 1
     # A caller cannot roll the authority backward through its CAS interface.
     with pytest.raises(RuntimeError, match="stale generation"):
-        authority.compare_and_advance(0, old)
+        authority.compare_and_advance(0, AnchorProposal("memory-main", 1, 1, "f" * 64))
     # Replaying the old signed anchor against the newer log fails count/head.
     with pytest.raises(AnchorError):
         log._verify_snapshot(old)
