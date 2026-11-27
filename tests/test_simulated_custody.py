@@ -700,9 +700,12 @@ def test_authentic_receipt_status_is_never_admission_authority(tmp_path):
     assert rejected_check.lifecycle_status == ReceiptStatus.REJECTED.value
     assert not rejected_check.admission_ready
 
-    expiring = auth.prepare(candidate(b"expiring-candidate"), "expiring-receipt")
+    expiring_candidate = candidate(
+        b"expiring-candidate", seq=1, previous=committed.checkpoint_digest,
+    )
+    expiring = auth.prepare(expiring_candidate, "expiring-receipt")
     clock.advance(5)
-    expired = auth.prepare(candidate(b"expiring-candidate"), "expiring-receipt")
+    expired = auth.prepare(expiring_candidate, "expiring-receipt")
     assert expired.custody_state == ReceiptStatus.EXPIRED.value
     expired_check = auth.verify_receipt(expired)
     assert expired_check.valid and expired_check.authenticated
