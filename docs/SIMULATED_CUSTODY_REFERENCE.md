@@ -29,7 +29,7 @@ A position row represents an active PREPARED reservation or a committed position
 
 ## Receipt authenticity is not admission
 
-`VerificationResult.authenticated` reports whether the receipt signature was authenticated. `lifecycle_status` reports the signed lifecycle state. `valid` means the requested receipt-verification checks succeeded; it does not mean the receipt authorizes memory or checkpoint admission. `admission_ready` is always `false` in this reference implementation because it does not implement AVA's admission path or independently prove the full admission conditions. A signed PREPARED, REJECTED, EXPIRED, or COMMITTED receipt is not, by signature alone, authority to admit anything. The caller must separately enforce the required lifecycle, scope, current custody floor, lineage, chain, and AVA policy. This simulator does not implement that caller-side admission operation.
+`VerificationResult.authenticated` reports whether the receipt signature was authenticated. `lifecycle_status` reports the signed lifecycle state. `valid` means the requested receipt-verification checks succeeded; it does not mean the receipt authorizes memory or checkpoint admission. Committed checkpoint outcomes distinguish authentic current from authentic historical evidence; callers may request a current-floor check with `require_current=True`. `admission_ready` is always `false` in this reference implementation because it does not implement AVA's admission path or independently prove the full admission conditions. A signed PREPARED, REJECTED, EXPIRED, or COMMITTED receipt is not, by signature alone, authority to admit anything. The caller must separately enforce the required lifecycle, scope, current custody floor, lineage, chain, and AVA policy. This simulator does not implement that caller-side admission operation.
 
 
 ## Current-floor and receipt verification semantics
@@ -86,3 +86,24 @@ The simulator does not implement AVA's local quarantine engine or trusted-memory
 | Verification bypass | `test_valid_signature_wrong_scope_is_not_admission`, `test_receipt_payload_tampering_is_detected`, `test_authentic_receipt_status_is_never_admission_authority`, `test_receipt_verification_distinguishes_unissued_and_inactive_signers`, `test_expired_prepared_receipt_verification_is_separate_from_lifecycle_status` |
 
 The test suite has no test that claims a complete simulator-database rollback is prevented. The explicit snapshot-restore test demonstrates the opposite and must remain in the suite as a warning against overclaiming.
+## Historical versus current receipt outcomes
+
+For committed checkpoint receipts, verification compares the exact receipt identity and checkpoint tuple against the floor reconstructed from the authenticated journal:
+
+- `AUTHENTIC_CURRENT`: authenticated, issued, current-epoch signer, and exact match to the current reconstructed floor.
+- `AUTHENTIC_HISTORICAL`: authenticated and issued, but a later committed floor supersedes this checkpoint. It remains historical evidence only; `admission_ready` is always false.
+- `STALE_FLOOR`: returned when `require_current=True` and an otherwise authentic, issued checkpoint receipt has been superseded.
+- `REVOKED_KEY`, `STALE_EPOCH`, and `UNISSUED_RECEIPT` remain distinct outcomes. A consumed recovery authorization returns `CONSUMED_AUTHORIZATION`.
+
+`require_current` is an explicit caller request. It does not turn this simulator into AVA's admission gate. No SIMULATED_CUSTODY outcome sets `admission_ready=True`.
+
+## Combined transition and adversarial test evidence
+
+The focused suite interleaves generation 0 → 1 → 2 with key A → B → C rotations, consumes recovery authorizations, rejects pre-rotation authorizations, reconstructs the floor after each committed transition, and finishes with authority-wide revocation. A separate test distinguishes a stale epoch from a revoked key.
+
+Two coordinated-tampering tiers are separate:
+
+1. SQLite-only edits alter journal payload, receipt metadata, transaction row, and floor row without HMAC keys. Journal authentication must fail closed.
+2. The key-holder demonstration uses the process-held simulator HMAC key to rewrite and re-authenticate a local journal event. It demonstrates the simulator's shared trust boundary, not resistance to a key-compromised attacker.
+
+Owner/quorum authorization-proof verification and independently administered custody failure/key domains remain production blockers and are not implemented by SIMULATED_CUSTODY.
