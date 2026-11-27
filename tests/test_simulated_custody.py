@@ -471,7 +471,7 @@ def test_recovery_authorization_row_cannot_widen_signed_scope(tmp_path):
     conn.close()
     with pytest.raises(CustodyIntegrityError, match="recovery authorization row"):
         auth.read_floor("stream-1")
-    assert len(history_before) == 4
+    assert len(history_before) == 5
 
 
 @pytest.mark.parametrize(
