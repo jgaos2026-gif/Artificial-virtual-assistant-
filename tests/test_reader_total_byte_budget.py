@@ -103,3 +103,21 @@ def test_view_and_report_agree_on_omitted_exactness_for_any_incomplete_read(tmp_
     assert view.inspection_complete is False
     assert view.omitted_count_exact is False
     assert view.omitted_count_exact == view.report.omitted_count_exact
+
+
+def test_total_byte_budget_does_not_read_a_lookahead_byte(tmp_path, monkeypatch):
+    from ava_military import braid_reader_adapter as adapter
+    p = tmp_path / "cold.jsonl"
+    p.write_bytes(LINE * 100)
+    original_read = adapter.os.read
+    total_read = 0
+
+    def tracked_read(fd, size):
+        nonlocal total_read
+        chunk = original_read(fd, size)
+        total_read += len(chunk)
+        return chunk
+
+    monkeypatch.setattr(adapter.os, "read", tracked_read)
+    _read_jsonl(p, max_total_bytes=400)
+    assert total_read == 400
