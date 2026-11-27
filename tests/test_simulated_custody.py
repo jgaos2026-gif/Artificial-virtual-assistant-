@@ -1230,8 +1230,8 @@ def test_expired_reservation_reacquisition_survives_restart_without_old_owner(tm
     clock.advance(5)
     prepared_b = auth.prepare(first_candidate, "reservation-B")
 
-    assert auth.query_transaction("reservation-A").status == ReceiptStatus.PREPARED.value
     # The second prepare expires and releases A before acquiring the same position.
+    assert auth.query_transaction("reservation-A").status == ReceiptStatus.EXPIRED.value
     assert auth.query_transaction("reservation-B").status == ReceiptStatus.PREPARED.value
     assert auth.verify_receipt(prepared_a).outcome == VerificationOutcome.EXPIRED
     assert auth.verify_receipt(prepared_a).reservation_active is False
