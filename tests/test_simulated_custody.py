@@ -1615,3 +1615,142 @@ def test_truncated_receipt_history_fails_closed_after_restart(tmp_path):
         reopened.verify_receipt(committed)
     with pytest.raises(CustodyIntegrityError):
         reopened.query_transaction("truncated-receipt")
+
+
+@pytest.mark.parametrize(
+    "operation,fault_point,expected_event",
+    [
+        ("prepare", "prepare.before_atomic_commit", None),
+        ("commit_before", "commit.before_atomic_commit", "PREPARED"),
+        ("commit_after", "commit.after_atomic_commit", "COMMITTED"),
+        ("recovery", "authorize_recovery.before_atomic_commit", None),
+        ("revocation", "revoke_authority.before_atomic_commit", None),
+    ],
+)
+def test_process_termination_at_custody_transaction_boundaries_reconciles_after_restart(
+    tmp_path, operation, fault_point, expected_event
+):
+    """Abrupt child-process death must leave either the prior state or durable commit."""
+    import os
+    import subprocess
+    import sys
+
+    db_path = tmp_path / f"crash-{operation}.sqlite3"
+    auth = make_authority(tmp_path)
+    if operation in ("commit_before", "commit_after", "recovery", "revocation"):
+        prepared, committed = prepare_commit(auth, tx=f"base-{operation}")
+        if operation in ("commit_before", "commit_after"):
+            # Create a second live reservation whose COMMIT is interrupted in child.
+            cand = candidate(b"crash-commit", seq=1, previous=committed.checkpoint_digest)
+            reservation = auth.prepare(cand, "crash-commit")
+            assert reservation.custody_state == "PREPARED"
+    else:
+        reservation = None
+
+    before_events = len(auth.journal_history())
+    child = r'''
+import os, sys
+from ava_military.custody_authority import (
+    SimulatedCustodyAuthority, CheckpointCandidate, PersistenceEvidence, sha256_hex
+)
+db, operation, fault_point = sys.argv[1:4]
+keys = {"key-a": b"A" * 32, "key-b": b"B" * 32}
+def fault(point):
+    if point == fault_point:
+        os._exit(73)
+auth = SimulatedCustodyAuthority(
+    db, authority_id="test-custody", keys=keys, active_key_id="key-a",
+    clock=lambda: 1000.0, lease_seconds=10, fault_injector=fault,
+)
+if operation == "prepare":
+    data = b"child-prepare"
+    cand = CheckpointCandidate(
+        stream_id="stream-1", lineage_id="lineage-0", generation=0,
+        sequence_no=0, checkpoint_digest=sha256_hex(data),
+        previous_checkpoint_digest="0" * 64,
+    )
+    auth.prepare(cand, "child-prepare")
+elif operation in ("commit_before", "commit_after"):
+    tx = "crash-commit"
+    record = auth.query_transaction(tx)
+    evidence = PersistenceEvidence(
+        tx, record.reservation_id, record.candidate["checkpoint_digest"],
+        b"crash-commit", "child-evidence",
+    )
+    auth.commit(tx, record.reservation_id, evidence)
+elif operation == "recovery":
+    auth.authorize_recovery(
+        stream_id="stream-1", previous_lineage_id="lineage-0",
+        target_lineage_id="lineage-1", lineage_parent_id="lineage-0",
+        previous_generation=0, target_generation=1,
+        authorization_proof="simulated-test-proof", transaction_id="child-recovery",
+    )
+elif operation == "revocation":
+    auth.revoke_authority(
+        new_authority_epoch=1, reason="child crash test",
+        authorization_proof="simulated-test-proof", target_key_id="key-a",
+        next_active_key_id="key-b", transaction_id="child-revocation",
+    )
+'''
+    # Re-open in the child using the exact same path and deterministic clock.
+    result = subprocess.run(
+        [sys.executable, "-c", child, str(auth.path), operation, fault_point],
+        cwd=os.getcwd(), capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 73, (result.returncode, result.stdout, result.stderr)
+
+    reopened = SimulatedCustodyAuthority(
+        auth.path, authority_id="test-custody", keys=KEYS,
+        active_key_id="key-a", clock=Clock(), lease_seconds=10,
+    )
+    history = reopened.journal_history()
+    if operation == "prepare":
+        assert history == ()
+        assert reopened.query_transaction("child-prepare") is None
+    elif operation in ("commit_before", "commit_after"):
+        tx = reopened.query_transaction("crash-commit")
+        assert tx is not None
+        assert tx.status == ("COMMITTED" if operation == "commit_after" else "PREPARED")
+        assert reopened.read_floor("stream-1").sequence_no == (
+            1 if operation == "commit_after" else 0
+        )
+        commit_events = [
+            event for event in history
+            if event["transaction_id"] == "crash-commit"
+        ]
+        assert [event["event_type"] for event in commit_events] == (
+            ["PREPARED", "COMMITTED"] if operation == "commit_after" else ["PREPARED"]
+        )
+    elif operation == "recovery":
+        assert len(history) == before_events
+        assert not any(event["event_type"] == "RECOVERY_AUTHORIZED" for event in history)
+        assert reopened.read_floor("stream-1").generation == 0
+    elif operation == "revocation":
+        assert len(history) == before_events
+        assert not any(event["event_type"] in ("AUTHORITY_KEY_REVOKED", "AUTHORITY_REVOKED") for event in history)
+        assert reopened.read_floor("stream-1").authority_epoch == 0
+
+
+def test_physical_sqlite_file_truncation_never_yields_authenticated_history(tmp_path):
+    import shutil
+    import sqlite3
+
+    auth = make_authority(tmp_path)
+    prepare_commit(auth, tx="physical-truncation")
+    damaged_path = tmp_path / "physically-truncated.sqlite3"
+    shutil.copy2(auth.path, damaged_path)
+    original_size = damaged_path.stat().st_size
+    assert original_size > 1024
+    with damaged_path.open("r+b") as handle:
+        handle.truncate(original_size // 2)
+        handle.flush()
+
+    try:
+        damaged = SimulatedCustodyAuthority(
+            damaged_path, authority_id="test-custody", keys=KEYS,
+            active_key_id="key-a", clock=Clock(), lease_seconds=10,
+        )
+    except sqlite3.DatabaseError:
+        return
+    with pytest.raises((CustodyIntegrityError, sqlite3.DatabaseError)):
+        damaged.journal_history()
