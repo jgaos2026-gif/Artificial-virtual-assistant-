@@ -97,7 +97,9 @@ def test_prepare_commit_floor_and_durable_journal_are_atomic(tmp_path):
     auth = make_authority(tmp_path)
     prepared, committed = prepare_commit(auth)
     assert prepared.custody_mode == committed.custody_mode == CUSTODY_MODE
-    assert auth.verify_receipt(prepared, expected_status=ReceiptStatus.PREPARED).valid
+    prepared_result = auth.verify_receipt(prepared, expected_status=ReceiptStatus.PREPARED)
+    assert prepared_result.outcome == VerificationOutcome.WRONG_STATUS
+    assert prepared_result.valid is False
     assert auth.verify_receipt(prepared, expected_status=ReceiptStatus.COMMITTED).outcome == VerificationOutcome.WRONG_STATUS
     current = auth.verify_receipt(committed, expected_status=ReceiptStatus.COMMITTED)
     assert current.valid and current.outcome == VerificationOutcome.AUTHENTIC_CURRENT
@@ -1185,3 +1187,14 @@ def test_require_current_rejects_non_committed_receipt_types(tmp_path):
     assert auth_result.outcome == VerificationOutcome.WRONG_STATUS
     assert auth_result.valid is False
     assert auth_result.admission_ready is False
+
+
+def test_live_prepared_receipt_explicitly_reports_active_reservation(tmp_path):
+    auth = make_authority(tmp_path)
+    prepared = auth.prepare(candidate(), "live-prepared-reservation")
+    result = auth.verify_receipt(prepared, expected_status=ReceiptStatus.PREPARED)
+    assert result.outcome == VerificationOutcome.VALID
+    assert result.valid and result.authenticated and result.issued
+    assert result.reservation_active is True
+    assert result.admission_ready is False
+    assert auth.verify_receipt(prepared, require_current=True).outcome == VerificationOutcome.WRONG_STATUS
