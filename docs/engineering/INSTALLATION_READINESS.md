@@ -15,7 +15,7 @@ It does not contain the integrated OASIS runtime, an NV012 document-grounded app
 
 The next milestone should be a **Hardened Local Research Build v1**: an unclassified, non-operational local installation with explicit security boundaries, reproducible installation and rollback, verified backup/restore, and measured operation on the declared target hardware.
 
-The intended constrained-node profile is **8 GB RAM and 1 TB storage**; this is a planning target, not a measured or qualified configuration in this repository. The Linux distribution and version still need to be selected. The Windows workstation is the development/operator environment, not the sovereign runtime target.
+The intended constrained-node profile is **8 GB RAM and 1 TB storage**; this is a planning target, not a measured or qualified configuration in this repository. The compatibility design now targets multiple Linux distribution families through capability-based adapters, but no distribution is qualified yet. The first Debian-family and Red Hat-family targets, exact versions, kernel, filesystem, and init/security capabilities must be selected before installer implementation. The Windows workstation is the development/operator environment, not the sovereign runtime target. See [Multi-Platform and Linux Distribution Compatibility](PLATFORM_COMPATIBILITY.md).
 
 ## 2. What is present on main
 
