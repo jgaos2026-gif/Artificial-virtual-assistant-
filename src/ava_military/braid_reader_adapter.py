@@ -129,6 +129,7 @@ def read_braided_stream(
             post_read_check,
         )
         if data is None:
+            consistent = False
             records, complete, omitted, diags = [], False, 0, ["pre-read custody check failed"]
     elif lock is not None:
         with lock.exclusive():
