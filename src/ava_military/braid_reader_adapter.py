@@ -5,8 +5,7 @@ import json
 import os
 import stat
 from dataclasses import dataclass, replace
-from types import MappingProxyType
-
+from typing import Any
 from .braid_provenance import (
     ColdHistoryProvenanceClassifier, ColdSnapshot, AnchorBaseline,
     MonotonicCheckpoint, ProvenanceReport,
@@ -24,12 +23,7 @@ class BraidedStreamSnapshotView:
     consistent_read_guaranteed: bool
     omitted_records_count: int
     omitted_count_exact: bool
-
-
-def _safe_view(value):
-    if isinstance(value, dict):
-        return MappingProxyType(dict(value))
-    return MappingProxyType({"_malformed": repr(type(value).__name__)})
+    read_session: Any = None
 
 
 def _read_jsonl(path, *, max_records=100000, max_line_bytes=1048576):
@@ -109,15 +103,39 @@ def read_braided_stream(
     path, *, classifier: ColdHistoryProvenanceClassifier, snapshot: ColdSnapshot,
     baseline: AnchorBaseline, checkpoint: MonotonicCheckpoint,
     max_records=100000, max_line_bytes=1048576, sync_guard=None, cold_log=None,
+    pre_read_check=None, post_read_check=None,
 ):
-    # A supplied writer must expose its actual shared lock. Missing guard fails closed.
-    if cold_log is not None:
-        sync_guard = getattr(cold_log, "_exclusive_guard", None)
-    elif sync_guard is None:
-        sync_guard = CrossProcessAdvisoryLock(path).exclusive
+    """Read under shared lock; optional custody checks mint a read-session result."""
+    if (pre_read_check is None) != (post_read_check is None):
+        raise ValueError("pre_read_check and post_read_check must be supplied together")
 
-    consistent = callable(sync_guard)
-    if consistent:
+    lock = None
+    if cold_log is not None:
+        lock = getattr(cold_log, "_cross_process_lock", None)
+        if lock is None:
+            sync_guard = getattr(cold_log, "_exclusive_guard", None)
+    elif sync_guard is None:
+        lock = CrossProcessAdvisoryLock(path)
+
+    consistent = lock is not None or callable(sync_guard)
+    read_session = None
+    if pre_read_check is not None:
+        if lock is None:
+            raise ValueError("guarded custody checks require the shared CrossProcessAdvisoryLock")
+        from .avo_provenance_gate import execute_guarded_read
+        data, read_session = execute_guarded_read(
+            lock, pre_read_check,
+            lambda: _read_jsonl(path, max_records=max_records, max_line_bytes=max_line_bytes),
+            post_read_check,
+        )
+        if data is None:
+            records, complete, omitted, diags = [], False, 0, ["pre-read custody check failed"]
+    elif lock is not None:
+        with lock.exclusive():
+            records, complete, omitted, diags = _read_jsonl(
+                path, max_records=max_records, max_line_bytes=max_line_bytes
+            )
+    elif callable(sync_guard):
         with sync_guard():
             records, complete, omitted, diags = _read_jsonl(
                 path, max_records=max_records, max_line_bytes=max_line_bytes
@@ -139,5 +157,5 @@ def read_braided_stream(
     verified = report.cold_evidence_verified and report.inspection_complete and not omitted
     return BraidedStreamSnapshotView(
         tuple(dict(x) for x in records), report, verified, True, complete,
-        consistent, omitted, False if omitted else True,
+        consistent, omitted, False if omitted else True, read_session,
     )
