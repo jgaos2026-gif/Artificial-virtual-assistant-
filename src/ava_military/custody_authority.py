@@ -1504,6 +1504,16 @@ class SimulatedCustodyAuthority:
                 # Once COMMITTED or REJECTED, lifecycle completion wins over
                 # the old PREPARED receipt's subsequently elapsed lease.
                 if transaction_status in (ReceiptStatus.COMMITTED.value, ReceiptStatus.REJECTED.value):
+                    requested_status = (
+                        expected_status.value if isinstance(expected_status, ReceiptStatus)
+                        else str(expected_status) if expected_status is not None else None
+                    )
+                    if requested_status is not None and requested_status != ReceiptStatus.PREPARED.value:
+                        return authenticated_result(
+                            VerificationOutcome.WRONG_STATUS, False,
+                            "PREPARED receipt is authentic history but does not match the requested lifecycle status",
+                            issued=True, signer_authorized=True, reservation_active=False,
+                        )
                     return authenticated_result(
                         VerificationOutcome.RESERVATION_NOT_ACTIVE, True,
                         "PREPARED receipt is authentic history; its transaction completed and the reservation is no longer active",
