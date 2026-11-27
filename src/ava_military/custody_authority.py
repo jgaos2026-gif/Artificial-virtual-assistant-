@@ -579,9 +579,7 @@ class SimulatedCustodyAuthority:
                 if expected_status is None or receipt.custody_state != expected_status:
                     raise CustodyIntegrityError("journal event lifecycle does not match signed receipt status")
                 referenced_receipts.add(receipt_id)
-                transaction_state_event = event_type != "COMMIT_REPLAY_REJECTED"
-                if event_type == "PREPARE_REJECTED" and payload.get("reason_code") == "TRANSACTION_ID_CONFLICT":
-                    transaction_state_event = False
+                transaction_state_event = event_type not in ("COMMIT_REPLAY_REJECTED", "PREPARE_REJECTED")
                 if transaction_state_event and txid is not None:
                     latest_tx_receipt[txid] = receipt
                     tx_status[txid] = expected_status
