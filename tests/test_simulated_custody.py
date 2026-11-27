@@ -559,3 +559,16 @@ def test_authenticated_duplicate_journal_entry_is_rejected(tmp_path):
     with pytest.raises(CustodyIntegrityError, match="duplicate custody journal event entry"):
         auth.read_floor("stream-1")
 
+def test_authority_revocation_flag_cannot_be_cleared_without_journal_transition(tmp_path):
+    auth = make_authority(tmp_path)
+    auth.revoke_authority(
+        target_authority_id="test-custody", new_authority_epoch=1,
+        reason="authority retirement", authorization_proof="owner-approved",
+    )
+    conn = sqlite3.connect(auth.path)
+    conn.execute("UPDATE meta SET value='0' WHERE key='authority_revoked'")
+    conn.commit()
+    conn.close()
+    with pytest.raises(CustodyIntegrityError, match="authority metadata"):
+        auth.read_floor("stream-1")
+
