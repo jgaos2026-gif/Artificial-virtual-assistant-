@@ -1,7 +1,10 @@
 import multiprocessing as mp
 import os
+from pathlib import Path
 
-from ava_military.shared_cross_process_lock import CrossProcessAdvisoryLock, lock_path_for
+from ava_military.shared_cross_process_lock import (
+    CrossProcessAdvisoryLock, CrossProcessLockTimeout, lock_path_for,
+)
 from ava_military.cold_log_tx import TransactionalColdLog
 
 
@@ -10,6 +13,15 @@ def _lock_worker(path, started, acquired):
     started.set()
     with lock.exclusive():
         acquired.set()
+
+
+def _timeout_worker(path, started, result):
+    started.set()
+    try:
+        with CrossProcessAdvisoryLock(path, timeout=0.2, poll_interval=0.01).exclusive():
+            result.put("acquired")
+    except CrossProcessLockTimeout:
+        result.put("timeout")
 
 
 def test_lock_identity_is_canonical_for_reader_and_writer(tmp_path):
@@ -37,19 +49,33 @@ def test_independent_process_blocks_on_same_lock_until_release(tmp_path):
     assert proc.exitcode == 0
 
 
+def test_lock_timeout_fails_closed_when_another_process_holds_lock(tmp_path):
+    target = tmp_path / "cold.jsonl"
+    ctx = mp.get_context("spawn")
+    started = ctx.Event()
+    result = ctx.Queue()
+    proc = ctx.Process(target=_timeout_worker, args=(str(target), started, result))
+    with CrossProcessAdvisoryLock(target):
+        proc.start()
+        assert started.wait(5), "timeout worker did not start"
+        assert result.get(timeout=5) == "timeout"
+    proc.join(5)
+    assert proc.exitcode == 0
+
+
 def _uncooperative_append(path, ready, proceed):
     ready.set()
     if not proceed.wait(5):
         raise RuntimeError("parent did not release uncooperative writer")
     # Deliberately bypass CrossProcessAdvisoryLock.
     with open(path, "ab", buffering=0) as stream:
-        stream.write(b'{"intruder":true}\n')
+        stream.write(b'{"intruder":true}\\n')
         os.fsync(stream.fileno())
 
 
 def test_uncooperative_writer_is_detected_by_post_read_currency_check(tmp_path):
     target = tmp_path / "cold.jsonl"
-    target.write_bytes(b'{"safe":true}\n')
+    target.write_bytes(b'{"safe":true}\\n')
     before = target.read_bytes()
     ctx = mp.get_context("spawn")
     ready, proceed = ctx.Event(), ctx.Event()
@@ -80,13 +106,13 @@ def test_writer_appends_with_shared_lock(tmp_path):
     target = tmp_path / "cold.jsonl"
     log = TransactionalColdLog(target)
     log.append({"id": "one"})
-    assert target.read_text().endswith("\n")
+    assert target.read_text().endswith("\\n")
 
 
 def _anchored_writer_lock_worker(lock_path, started, acquired):
     from ava_military.anchor import _exclusive_writer_lock
     started.set()
-    with _exclusive_writer_lock(lock_path):
+    with _exclusive_writer_lock(Path(lock_path)):
         acquired.set()
 
 
