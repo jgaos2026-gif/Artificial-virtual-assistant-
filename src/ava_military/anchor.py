@@ -377,17 +377,33 @@ class CompositeWakeVerifier:
     ) -> bool:
         try:
             _validate_snapshot(snapshot, expected_stream_id)
-            if not self._anchor_authority.verify(snapshot):
+            current = self._anchor_authority.read(expected_stream_id)
+            if current is None:
+                raise AnchorError("MISSING_ANCHOR: wake denied")
+            _validate_snapshot(current, expected_stream_id)
+            if (
+                current.generation != snapshot.generation
+                or current.record_count != snapshot.record_count
+                or current.head_hash != snapshot.head_hash
+            ):
+                raise AnchorError("stale anchor replay: supplied checkpoint is not current")
+            if not self._anchor_authority.verify(current) or not self._anchor_authority.verify(snapshot):
                 raise AnchorError("anchor receipt rejected")
             if (
-                receipt.checkpoint_seq != snapshot.generation
-                or receipt.checkpoint_head != snapshot.head_hash
+                type(receipt.checkpoint_seq) is not int
+                or receipt.checkpoint_seq != current.generation
+                or receipt.checkpoint_head != current.head_hash
+                or not isinstance(receipt.spine_digest, str)
                 or not _SHA_RE.fullmatch(receipt.spine_digest)
+                or not isinstance(receipt.verifier_id, str)
                 or not receipt.verifier_id
-                or not receipt.signature_hex
+                or not isinstance(receipt.signature_hex, str)
+                or len(receipt.signature_hex) == 0
                 or len(receipt.signature_hex) > MAX_SIGNATURE_HEX
+                or len(receipt.signature_hex) % 2
+                or not re.fullmatch(r"[0-9a-fA-F]+", receipt.signature_hex)
             ):
-                raise AnchorError("spine receipt is not bound to exact checkpoint")
+                raise AnchorError("spine receipt is not bound to exact current checkpoint")
             if not self._spine_verifier.verify_spine_receipt(receipt):
                 raise AnchorError("spine receipt authentication failed")
             for pin in self._required_bricks:
