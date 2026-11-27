@@ -7,69 +7,73 @@ Repair branch: `security/adversarial-repair-memory-affect-2026-11-27`
 Draft pull request: https://github.com/jgaos2026-gif/Artificial-virtual-assistant-/pull/3  
 Base: `foundation/ava-military-research-v0.1`
 
-The sweep inspected the repository tree, architecture, security boundaries, threat model, assurance plan, evidence register, Navy track boundaries, governance, hash-chain ledger, memory/affective physiology implementation, tests, packaging configuration, and CI workflow.
+Scope: adversarial review and repair of the sovereign Clip Brick admission reference contract, Memory & Affective Physiology candidate, COLD continuity anchoring interface, and wake verification boundary.
 
 ## Changes made
 
-- Added `src/ava_military/sovereign.py`.
-- Added `tests/test_sovereign.py`.
-- Added `docs/assurance/MEMORY_AFFECTIVE_SOVEREIGN_STITCH_ADVERSARIAL_REPAIR.md`.
-- Opened draft PR #3. No merge or deployment performed.
+- Added `src/ava_military/sovereign.py` and `tests/test_sovereign.py`.
+- Added `src/ava_military/anchor.py` and `tests/test_anchor.py`.
+- Added `docs/assurance/COLD_ANCHOR_WAKE_V2.md`.
+- Added disk-backed temporary uniqueness indexing during streamed COLD verification so duplicate detection does not retain every record ID in a Python RAM set.
+- Added explicit provisioning, missing-anchor/archive denial, monotonic compare-and-advance interface, append+fsync semantics, OS advisory writer lock, strict frame parsing, and composite wake checks.
+- Added a latest-checkpoint comparison at wake to reject replay of a valid but stale signed anchor.
+- Updated the interrupted-write test to patch the filesystem method correctly.
+- No merge or deployment performed. PR #3 remains draft.
 - No protected Constitution, Soul Seed, Logic Spine, or SB688/SB689/SB690/SB712 implementation was edited.
 
-## New reference contract
+## Verified CI evidence
 
-The new module provides:
-- immutable Brick ID/version/digest admission identity;
-- quarantine-first admission state transitions;
-- inspect, validate, certify, and owner-approval gates;
-- exact digest binding between verifier receipts and manifest;
-- no admission where a Brick requests protected-core writes;
-- runtime operation verification with quarantine on failure;
-- explicit revocation;
-- bounded affective resource outputs and finite input checks;
-- no affect argument on admission or operation authorization methods.
+GitHub Actions workflow: `tests`, job: `unit-tests`, Python 3.12.
 
-## Test record
+1. Earlier anchor/wake implementation:
+   - Run: https://github.com/jgaos2026-gif/Artificial-virtual-assistant-/actions/runs/46045461451
+   - Commit: `a0a873f31e896356f05b13f30976b0ffb217d2fa`
+   - Result: success; pytest log reported **48 passed in 0.40s**.
 
-New test file contains nine focused tests:
-1. full admission with required gates and owner approval;
-2. owner absence remains OWNER_PENDING;
-3. protected-core write request rejected;
-4. mismatched verification digest quarantines;
-5. runtime verification failure quarantines;
-6. revoked version cannot operate;
-7. new immutable version is distinct;
-8. affective budgets are capped and reject NaN/Infinity;
-9. admission and runtime verification signatures expose no affect parameter.
+2. Follow-up stale-anchor replay repair:
+   - Run: https://github.com/jgaos2026-gif/Artificial-virtual-assistant-/actions/runs/46045562639
+   - Commit: `0e3e6e0d6b7dfeb3670ee9bde754cdcd142b4acd`
+   - Result: success; checkout, Python setup, dependency installation, editable package installation, and pytest all completed; pytest log reported **49 passed in 0.33s**.
 
-GitHub Actions run created for PR #3:
-- Run ID: `46044773803`
-- Commit: `fb9874a9422dbb4aa3e25c358ff333aa880f6074`
-- Initial observed status: QUEUED.
-- Final outcome: pending retrieval; do not report tests as passed until run completes.
+These results prove the repository's current reference test suite passed on the recorded commit. They do not prove independent production anti-rollback protection, hardware behavior, cross-host failure-domain separation, or integrated OASIS qualification.
 
-## Known limitations / not yet repaired
+## Anchor and wake test coverage
 
-- Existing COLD memory hash chain has no independently protected expected-head anchor; valid-prefix truncation is not detectable without an external anchor.
-- Existing COLD append lacks complete cross-process locking, directory fsync, and tested partial-write recovery.
-- Existing assurance booleans and certification reference are not cryptographic proof.
-- The new verifier receipt/evidence references are interfaces, not signed certificates; verifier identity and key custody are not implemented.
-- Independent SB712 witnesses and independent failure domains are not implemented.
-- Full typed lineage vocabulary is specified but not yet integrated into the existing MemoryBraid event store.
-- Existing wake/sleep helper accepts caller-provided integrity booleans; runtime verifier orchestration remains unimplemented.
-- No actual continuous monitor daemon, OS isolation, host-level egress enforcement, production identity service, or runtime Brick loader is included.
-- No integrated eleven-test military acceptance campaign was run.
-- No production, Navy, DoD, ATO, CUI, or classified-readiness claim is made.
+The adversarial tests cover:
+- explicit provisioning and refusal to auto-create/reset;
+- missing archive and missing anchor;
+- COLD tail truncation against the external checkpoint;
+- stale generation compare-and-advance rejection and old-anchor replay;
+- anchor tampering;
+- duplicate record IDs;
+- unsafe stream and record identifiers;
+- strict JSON payload rejection (including NaN);
+- malformed frame schema;
+- interrupted append leaving the stream unusable rather than auto-repaired;
+- concurrent thread writers preserving checkpoint sequence;
+- exact Brick version/digest pinning and mismatch denial;
+- revoked Brick denial;
+- spine and Brick verifier exceptions denying wake;
+- stale but correctly authenticated old anchor replay denied at wake.
+
+## Trust boundary and remaining limitations
+
+- `AnchorAuthority`, `SpineReceiptVerifier`, and `BrickTrustVerifier` are interfaces. The in-memory test authority is test-only and is not an independent trust domain.
+- No production external monotonic authority, separately administered service, hardware-backed key custody, production signature scheme, or durable key-rotation/revocation process is implemented.
+- The OS writer lock is advisory and assumes all writers honor it; a privileged hostile process can bypass it.
+- The COLD log and anchor provider are not yet integrated into the existing `MemoryBraid` implementation or OASIS wake lifecycle.
+- The anchor authority must enforce atomic monotonic compare-and-advance outside the archive's rollback domain. A local sibling directory or local HMAC file is not sufficient.
+- Crash between durable log append and external anchor advancement intentionally leaves the stream ahead of its anchor and denies use; explicit audited reconciliation is not implemented.
+- No production Brick registry, signed admission certificates, SB712 independent witness quorum, or continuous runtime monitor/loader is implemented.
+- No integrated eleven-test military acceptance campaign was run; those tests remain NOT RUN.
+- No production, Navy, DoD, ATO, CUI, classified-readiness, or operational-readiness claim is made.
 
 ## Next required gates
 
-1. Retrieve and inspect PR #3 CI run and logs.
-2. Fix any failing tests before adding scope.
-3. Harden MemoryBraid event schema/canonicalization and crash consistency.
-4. Add independent expected-head anchoring contract and explicit unanchored state.
-5. Integrate typed lineage links without destructive mutation.
-6. Replace caller-asserted wake checks with verifier-produced results.
-7. Implement persistent Brick admission registry, signed certificates, revocation distribution, and continuous operation monitor behind explicit interfaces.
-8. Run adversarial resource, concurrency, truncation, replay, and crash-recovery tests.
-9. Keep all integrated military acceptance tests marked NOT RUN until actually executed.
+1. Design and implement a separately administered monotonic anchor provider with durable CAS and authenticated snapshots.
+2. Integrate the anchor into MemoryBraid without rewriting/migrating existing COLD history; existing unanchored history must remain explicitly UNANCHORED until an owner-approved migration/provisioning ceremony.
+3. Implement signed spine receipts and exact Brick registry/revocation evidence.
+4. Add process-level and crash/power-loss tests on supported operating systems and representative storage.
+5. Add SB712 independent witness and failure-domain qualification.
+6. Integrate the composite wake gate into the actual OASIS lifecycle.
+7. Run integrated acceptance tests only when their real runtime components exist; keep all unexecuted tests marked NOT RUN.
