@@ -58,13 +58,10 @@ def test_post_check_runs_when_read_raises(tmp_path):
     assert called == [True]
 
 
-def test_gate_summary_is_read_only_and_uses_actual_report_fields():
-    summary = build_avo_provenance_summary(
-        _view(),
-        read_session=CheckpointReadSession(True, True, _mint=__import__(
-            "ava_military.avo_provenance_gate", fromlist=["_MINT"]
-        )._MINT),
-    )
+def test_gate_summary_is_read_only_and_uses_actual_report_fields(tmp_path):
+    lock = CrossProcessAdvisoryLock(tmp_path / "cold.jsonl")
+    _, session = execute_guarded_read(lock, lambda: True, lambda: None, lambda: True)
+    summary = build_avo_provenance_summary(_view(), read_session=session)
     assert summary.anchored_count == 1
     assert summary.anchored_evidence_usable
     assert summary.records[0].entry_hash == "a" * 64
