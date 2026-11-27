@@ -60,3 +60,59 @@ The test suite exercises these isolated reference interfaces only. It does not
 prove MemoryBraid integration, independent SB712 witness custody, hardware
 anti-rollback, production key custody, military suitability, ATO, CMMC, or
 DoD/Navy approval.
+
+
+## Shared cross-process lock
+
+The isolated reference writer and reader now derive one advisory lock identity
+from the canonical resolved COLD resource path using
+`shared_cross_process_lock.lock_path_for()`. The lock file is persistent and
+must not be unlinked while a process may hold it. Cooperating processes on the
+same host serialize reads and writes by entering the same exclusive lock.
+
+This is an advisory protocol, not a mandatory access-control boundary. A
+process with filesystem write access can bypass it. The adversarial test writes
+directly to the COLD file while the reader holds the lock and checks that
+pre/post content currency detects the mutation. A successful lock acquisition
+does not establish that all writers are cooperative.
+
+The reader's `consistent_read_guaranteed` flag means that this read operation
+entered the shared advisory lock contract. It does not mean the file cannot be
+modified by a privileged or uncooperative process, nor does it prove distributed
+locking across hosts or network filesystems.
+
+## AVO summary gate
+
+`avo_provenance_gate.py` is a read-only adapter over the actual
+`ProvenanceReport` and `BraidedStreamSnapshotView` fields. It does not create
+record classifications, advance checkpoints, certify evidence, or grant Clip
+Brick authority. Missing raw identity fields remain absent. Duplicate raw
+record indices are rejected.
+
+The guarded read API owns the shared lock and runs pre-read and post-read
+currency checks around the read callback. The resulting session object is an
+API capability intended to prevent accidental caller assertion. Python module
+privacy is not a security boundary against hostile code running in the same
+interpreter. AVO must run inside a controlled process boundary.
+
+## Acceptance gate status
+
+The following acceptance areas are pending execution against the final branch
+commit SHA. A test definition is not a test result.
+
+1. NOT YET RUN — actual branch Gate 1 interface compatibility.
+2. NOT YET RUN — read-only AVO behavior; no trust promotion or certification.
+3. NOT YET RUN — raw identity mapping and duplicate-index rejection.
+4. NOT YET RUN — guarded pre-read/post-read session behavior.
+5. NOT YET RUN — cross-process lock serialization.
+6. NOT YET RUN — concurrent writer behavior and unique temporary files.
+7. NOT YET RUN — durability failure behavior.
+8. NOT YET RUN — snapshot signature and checkpoint binding.
+9. NOT YET RUN — post-read currency and uncooperative-writer detection.
+10. NOT YET RUN — full-store rollback limitation.
+11. NOT YET RUN — complete regression suite and CI on the final SHA.
+
+The current branch adds shared locking and the AVO read-only adapter. It does
+not yet implement the proposed file-backed checkpoint custody store, unique
+custody temp files, fsync ambiguity exception, or independent monotonic
+custody. Those remain open engineering work and must not be marked accepted.
