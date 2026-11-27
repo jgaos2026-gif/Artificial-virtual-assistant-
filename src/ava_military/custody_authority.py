@@ -1387,8 +1387,12 @@ class SimulatedCustodyAuthority:
                 reservation_active=reservation_active,
             )
 
+        # BEGIN establishes one SQLite read snapshot. Every database-backed
+        # decision below is made from this same snapshot, including journal
+        # reconstruction, signer state, issuance, lifecycle, lease and floor.
         conn = self._connect()
         try:
+            conn.execute("BEGIN")
             self._verify_state(conn)
             history_row = conn.execute(
                 "SELECT receipt_json FROM receipts WHERE receipt_id=?", (item.receipt_id,)
@@ -1419,13 +1423,13 @@ class SimulatedCustodyAuthority:
                     VerificationOutcome.UNISSUED_RECEIPT, False,
                     "receipt signature is authentic but no matching custody issuance record exists",
                 )
-        except CustodyError:
-            raise
-        finally:
-            conn.close()
-        if item.custody_state == ReceiptStatus.RECOVERY_AUTHORIZED.value and item.recovery_authorization_id:
-            conn = self._connect()
-            try:
+
+            # Precedence after signer/issuance checks:
+            # consumed recovery authorization -> stale source floor ->
+            # PREPARED lifecycle/lease -> recovery lease -> caller scope/status
+            # -> current-floor classification. These dimensions are also
+            # exposed separately on VerificationResult.
+            if item.custody_state == ReceiptStatus.RECOVERY_AUTHORIZED.value and item.recovery_authorization_id:
                 auth_row = conn.execute(
                     "SELECT * FROM recovery_authorizations WHERE recovery_authorization_id=?",
                     (item.recovery_authorization_id,),
@@ -1464,78 +1468,106 @@ class SimulatedCustodyAuthority:
                         "recovery authorization is authentic and issued but its source floor has advanced",
                         issued=True, signer_authorized=True,
                     )
-            finally:
-                conn.close()
-        if item.lease_expires_at is not None and item.custody_state in (ReceiptStatus.PREPARED.value, ReceiptStatus.RECOVERY_AUTHORIZED.value):
-            if self._now() >= item.lease_expires_at:
-                return authenticated_result(VerificationOutcome.EXPIRED, False, "receipt is authentic and issued but its reservation lease expired", issued=True, signer_authorized=True)
-        if expected_operation is not None and item.operation != expected_operation:
-            return authenticated_result(VerificationOutcome.WRONG_SCOPE, False, "receipt is authentic and issued but operation scope does not match", issued=True, signer_authorized=True)
-        if expected_scope:
-            for field, expected in expected_scope.items():
-                if getattr(item, field, object()) != expected:
-                    return authenticated_result(VerificationOutcome.WRONG_SCOPE, False, f"receipt is authentic and issued but {field} scope does not match", issued=True, signer_authorized=True)
-        if expected_status is not None:
-            status = expected_status.value if isinstance(expected_status, ReceiptStatus) else str(expected_status)
-            if item.custody_state != status:
-                return authenticated_result(VerificationOutcome.WRONG_STATUS, False, "receipt is authentic and issued but lifecycle status does not match the requested status", issued=True, signer_authorized=True)
-        # require_current applies only to committed checkpoint receipts.
-        if require_current and not (
-            item.custody_state == ReceiptStatus.COMMITTED.value
-            and item.operation == "commit"
-            and item.stream_id is not None
-        ):
-            return authenticated_result(
-                VerificationOutcome.WRONG_STATUS, False,
-                "require_current applies only to committed checkpoint receipts",
-                issued=True, signer_authorized=True,
-            )
-        if item.custody_state == ReceiptStatus.PREPARED.value and item.operation == "prepare":
-            conn = self._connect()
-            try:
+
+            if item.custody_state == ReceiptStatus.PREPARED.value and item.operation == "prepare":
                 tx = conn.execute(
                     "SELECT status, receipt_json, lease_expires_at FROM transactions WHERE transaction_id=?",
                     (item.transaction_id,),
                 ).fetchone()
+                transaction_status = tx["status"] if tx is not None else None
+                lease_expires_at = float(tx["lease_expires_at"]) if tx is not None and tx["lease_expires_at"] is not None else None
                 active_reservation = bool(
                     tx is not None
-                    and tx["status"] == ReceiptStatus.PREPARED.value
+                    and transaction_status == ReceiptStatus.PREPARED.value
                     and self._decode_receipt(tx["receipt_json"]) == item
-                    and tx["lease_expires_at"] is not None
-                    and self._now() < float(tx["lease_expires_at"])
+                    and lease_expires_at is not None
+                    and self._now() < lease_expires_at
                 )
-            finally:
-                conn.close()
-            if active_reservation:
+                if active_reservation:
+                    return authenticated_result(
+                        VerificationOutcome.VALID, True,
+                        "receipt is authentic, issued, and is the live PREPARED reservation; admission_ready=false",
+                        issued=True, signer_authorized=True, reservation_active=True,
+                    )
+                # Once COMMITTED or REJECTED, lifecycle completion wins over
+                # the old PREPARED receipt's subsequently elapsed lease.
+                if transaction_status in (ReceiptStatus.COMMITTED.value, ReceiptStatus.REJECTED.value):
+                    return authenticated_result(
+                        VerificationOutcome.RESERVATION_NOT_ACTIVE, True,
+                        "PREPARED receipt is authentic history; its transaction completed and the reservation is no longer active",
+                        issued=True, signer_authorized=True, reservation_active=False,
+                    )
+                if transaction_status == ReceiptStatus.EXPIRED.value or (
+                    transaction_status == ReceiptStatus.PREPARED.value
+                    and lease_expires_at is not None
+                    and self._now() >= lease_expires_at
+                ):
+                    return authenticated_result(
+                        VerificationOutcome.EXPIRED, False,
+                        "PREPARED receipt is authentic history but its reservation lease expired",
+                        issued=True, signer_authorized=True, reservation_active=False,
+                    )
+                if expected_status is not None:
+                    return authenticated_result(
+                        VerificationOutcome.WRONG_STATUS, False,
+                        "PREPARED receipt is authentic history but no longer represents the transaction current lifecycle",
+                        issued=True, signer_authorized=True,
+                    )
                 return authenticated_result(
-                    VerificationOutcome.VALID, True,
-                    "receipt is authentic, issued, and is the live PREPARED reservation; admission_ready=false",
-                    issued=True, signer_authorized=True, reservation_active=True,
+                    VerificationOutcome.RESERVATION_NOT_ACTIVE, True,
+                    "PREPARED receipt is authentic historical evidence; its reservation is no longer active",
+                    issued=True, signer_authorized=True, reservation_active=False,
                 )
+
+            if item.custody_state == ReceiptStatus.RECOVERY_AUTHORIZED.value and item.lease_expires_at is not None:
+                if self._now() >= item.lease_expires_at:
+                    return authenticated_result(
+                        VerificationOutcome.EXPIRED, False,
+                        "recovery authorization is authentic and issued but its reservation lease expired",
+                        issued=True, signer_authorized=True,
+                    )
+            if expected_operation is not None and item.operation != expected_operation:
+                return authenticated_result(VerificationOutcome.WRONG_SCOPE, False, "receipt is authentic and issued but operation scope does not match", issued=True, signer_authorized=True)
+            if expected_scope:
+                for field, expected in expected_scope.items():
+                    if getattr(item, field, object()) != expected:
+                        return authenticated_result(VerificationOutcome.WRONG_SCOPE, False, f"receipt is authentic and issued but {field} scope does not match", issued=True, signer_authorized=True)
             if expected_status is not None:
+                status = expected_status.value if isinstance(expected_status, ReceiptStatus) else str(expected_status)
+                if item.custody_state != status:
+                    return authenticated_result(VerificationOutcome.WRONG_STATUS, False, "receipt is authentic and issued but lifecycle status does not match the requested status", issued=True, signer_authorized=True)
+            # require_current applies only to committed checkpoint receipts.
+            if require_current and not (
+                item.custody_state == ReceiptStatus.COMMITTED.value
+                and item.operation == "commit"
+                and item.stream_id is not None
+            ):
                 return authenticated_result(
                     VerificationOutcome.WRONG_STATUS, False,
-                    "PREPARED receipt is authentic history but no longer represents the transaction current lifecycle",
+                    "require_current applies only to committed checkpoint receipts",
                     issued=True, signer_authorized=True,
                 )
-            return authenticated_result(
-                VerificationOutcome.RESERVATION_NOT_ACTIVE, True,
-                "PREPARED receipt is authentic historical evidence; its reservation is no longer active",
-                issued=True, signer_authorized=True, reservation_active=False,
-            )
-        if item.custody_state == ReceiptStatus.COMMITTED.value and item.stream_id is not None:
-            conn = self._connect()
-            try:
+            if item.custody_state == ReceiptStatus.COMMITTED.value and item.stream_id is not None:
                 floor = conn.execute("SELECT * FROM floors WHERE stream_id=?", (item.stream_id,)).fetchone()
-                is_current = bool(floor is not None and floor["receipt_id"] == item.receipt_id and floor["lineage_id"] == item.lineage_id and floor["generation"] == item.generation and floor["sequence_no"] == item.sequence_no and floor["checkpoint_digest"] == item.checkpoint_digest and floor["previous_checkpoint_digest"] == item.previous_checkpoint_digest)
-            finally:
-                conn.close()
-            if is_current:
-                return authenticated_result(VerificationOutcome.AUTHENTIC_CURRENT, True, "receipt is authentic, issued, and matches the reconstructed current floor; admission_ready=false", issued=True, signer_authorized=True)
-            if require_current:
-                return authenticated_result(VerificationOutcome.STALE_FLOOR, False, "receipt is authentic and issued but superseded by the reconstructed current floor", issued=True, signer_authorized=True)
-            return authenticated_result(VerificationOutcome.AUTHENTIC_HISTORICAL, True, "receipt is authentic and issued historical evidence; a later floor supersedes it; admission_ready=false", issued=True, signer_authorized=True)
-        return authenticated_result(VerificationOutcome.VALID, True, f"receipt is authentic and issued; lifecycle={item.custody_state}; admission_ready=false", issued=True, signer_authorized=True)
+                is_current = bool(
+                    floor is not None
+                    and floor["receipt_id"] == item.receipt_id
+                    and floor["lineage_id"] == item.lineage_id
+                    and floor["generation"] == item.generation
+                    and floor["sequence_no"] == item.sequence_no
+                    and floor["checkpoint_digest"] == item.checkpoint_digest
+                    and floor["previous_checkpoint_digest"] == item.previous_checkpoint_digest
+                )
+                if is_current:
+                    return authenticated_result(VerificationOutcome.AUTHENTIC_CURRENT, True, "receipt is authentic, issued, and matches the reconstructed current floor; admission_ready=false", issued=True, signer_authorized=True)
+                if require_current:
+                    return authenticated_result(VerificationOutcome.STALE_FLOOR, False, "receipt is authentic and issued but superseded by the reconstructed current floor", issued=True, signer_authorized=True)
+                return authenticated_result(VerificationOutcome.AUTHENTIC_HISTORICAL, True, "receipt is authentic and issued historical evidence; a later floor supersedes it; admission_ready=false", issued=True, signer_authorized=True)
+            return authenticated_result(VerificationOutcome.VALID, True, f"receipt is authentic and issued; lifecycle={item.custody_state}; admission_ready=false", issued=True, signer_authorized=True)
+        except CustodyError:
+            raise
+        finally:
+            conn.close()
 
     def authorize_recovery(
         self, *, stream_id: str, previous_lineage_id: str, target_lineage_id: str,
