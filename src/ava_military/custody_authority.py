@@ -1371,9 +1371,6 @@ class SimulatedCustodyAuthority:
             return VerificationResult(VerificationOutcome.INVALID_CANONICALIZATION, False, CUSTODY_MODE, "unsupported receipt schema/canonicalization/domain")
         if item.custody_mode != CUSTODY_MODE or item.signature_algorithm != "HMAC-SHA256-TEST-ONLY":
             return VerificationResult(VerificationOutcome.INVALID_CANONICALIZATION, False, CUSTODY_MODE, "simulator environment/algorithm mismatch")
-        if not self._verify_signature_only(item):
-            return VerificationResult(VerificationOutcome.INVALID_SIGNATURE, False, CUSTODY_MODE, "receipt signature invalid")
-
         def authenticated_result(
             outcome: VerificationOutcome, valid: bool, reason: str, *,
             issued: bool = False, signer_authorized: bool = False,
@@ -1393,6 +1390,8 @@ class SimulatedCustodyAuthority:
         conn = self._connect()
         try:
             conn.execute("BEGIN")
+            if not self._verify_signature_only(item):
+                return VerificationResult(VerificationOutcome.INVALID_SIGNATURE, False, CUSTODY_MODE, "receipt signature invalid")
             self._verify_state(conn)
             history_row = conn.execute(
                 "SELECT receipt_json FROM receipts WHERE receipt_id=?", (item.receipt_id,)
