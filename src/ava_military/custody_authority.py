@@ -796,7 +796,7 @@ class SimulatedCustodyAuthority:
                     or position["checkpoint_digest"] != tx["checkpoint_digest"]
                 ):
                     raise CustodyIntegrityError("transaction position reservation binding mismatch")
-            elif position is not None:
+            elif position is not None and position["transaction_id"] == tx["transaction_id"]:
                 raise CustodyIntegrityError("inactive transaction still owns a reserved position")
 
         positions = conn.execute("SELECT * FROM positions").fetchall()
