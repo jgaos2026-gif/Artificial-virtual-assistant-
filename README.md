@@ -1,6 +1,6 @@
 # AVA for Military and Navy Research
 
-**Artificial Virtual Assistant (AVA)** is a JGA Enterprises research program for a locally sovereign, evidence-governed digital-organism architecture intended for evaluation in controlled military and Navy-adjacent environments.
+**Artificial Virtual Assistant (AVA)** is a JGA Enterprises research program developing a local-first, evidence-governed assistant architecture for controlled research and potential military/Navy-adjacent evaluation. “Digital Organism” is the project’s architecture term for the intended persistent identity, state, memory, and governed lifecycle; it is not a claim of biological life or subjective experience.
 
 AVA is not represented here as fielded, production-secure, accredited, or military-certified. This repository separates canonical design, prototype implementation, test evidence, and open research.
 
@@ -8,7 +8,7 @@ AVA is not represented here as fielded, production-secure, accredited, or milita
 
 Develop and rigorously evaluate a local-first assistant architecture that preserves identity and state lineage, operates under explicit authority boundaries, explains evidence behind consequential outputs, contains untrusted inputs, and recovers through verified checkpoints.
 
-## Core design
+## Target architecture (design intent)
 
 - **AVA:** persistent organism/operator identity and governed decision runtime.
 - **OASIS:** local runtime and operating environment.
@@ -33,7 +33,7 @@ Passing a component test does not establish integrated-system security or milita
 
 ## Repository status
 
-This is a clean research baseline. Initial scope is architecture, threat model, assurance plan, evidence discipline, and a staged implementation roadmap. No production deployment or operational use is authorized by this repository.
+This repository now contains a research-stage Python reference implementation for selected governance, admission, provenance, COLD-record, memory, and checkpoint interfaces. These modules are not integrated into a deployable AVA/OASIS runtime. Main CI run #199 passed 98 tests on commit 373b7c8583b34fca06f1dd2966ea50ffb1242821; those are component/reference tests, not the eleven integrated acceptance tests. The integrated acceptance gate remains NOT RUN. No production deployment or operational use is authorized by this repository.
 
 ## Start here
 
@@ -44,6 +44,9 @@ This is a clean research baseline. Initial scope is architecture, threat model, 
 5. [Military evaluation roadmap](docs/roadmap/MILITARY_EVALUATION_ROADMAP.md)
 6. [Evidence register](docs/evidence/EVIDENCE_REGISTER.md)
 7. [Decisions and open questions](docs/governance/DECISIONS_AND_OPEN_QUESTIONS.md)
+8. [Engineering terminology standard](docs/engineering/TERMINOLOGY_STANDARD.md)
+9. [Installation and hardening readiness](docs/engineering/INSTALLATION_READINESS.md)
+10. [Development workstation and infrastructure stack](docs/engineering/DEVELOPMENT_STACK.md)
 
 ## Safety and use restrictions
 
