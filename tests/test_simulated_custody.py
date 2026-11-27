@@ -1383,7 +1383,7 @@ def test_read_floor_uses_one_snapshot_during_signing_key_rotation(tmp_path, monk
     import threading
 
     auth = make_authority(tmp_path)
-    prepare_commit(auth, tx="read-floor-snapshot")
+    _, committed = prepare_commit(auth, tx="read-floor-snapshot")
     snapshot_ready = threading.Event()
     release_reader = threading.Event()
     writer_done = threading.Event()
@@ -1431,5 +1431,11 @@ def test_read_floor_uses_one_snapshot_during_signing_key_rotation(tmp_path, monk
     assert reader_errors == []
     assert len(attestations) == 1
     assert writer_blocked_by_snapshot, "key rotation completed while read_floor was assembling an attestation"
-    assert auth.verify_floor_attestation(attestations[0]) is True
+    # The returned attestation must describe the pre-rotation snapshot. It is
+    # expected to become stale after the writer commits the key transition.
+    assert attestations[0].key_id == "key-a"
+    assert attestations[0].authority_epoch == 0
+    assert attestations[0].revoked_key_ids == ()
+    assert attestations[0].checkpoint_digest == committed.checkpoint_digest
+    assert auth.verify_floor_attestation(attestations[0]) is False
     assert writer_done.is_set()
