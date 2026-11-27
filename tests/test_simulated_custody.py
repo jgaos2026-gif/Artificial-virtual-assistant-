@@ -646,3 +646,66 @@ def test_receipt_lease_is_expired_at_exact_boundary(tmp_path):
     assert result.outcome == VerificationOutcome.EXPIRED
     assert not result.valid
 
+def test_receipt_history_payload_cannot_be_changed_independently(tmp_path):
+    auth = make_authority(tmp_path)
+    _, committed = prepare_commit(auth)
+    conn = sqlite3.connect(auth.path)
+    row = conn.execute(
+        "SELECT receipt_json FROM receipts WHERE receipt_id=?",
+        (committed.receipt_id,),
+    ).fetchone()
+    altered = json.loads(row[0])
+    altered["checkpoint_digest"] = "f" * 64
+    conn.execute(
+        "UPDATE receipts SET receipt_json=? WHERE receipt_id=?",
+        (json.dumps(altered, sort_keys=True, separators=(",", ":")), committed.receipt_id),
+    )
+    conn.commit()
+    conn.close()
+    with pytest.raises(CustodyIntegrityError, match="unauthenticated"):
+        auth.read_floor("stream-1")
+
+
+def test_transaction_columns_cannot_diverge_from_prepared_event(tmp_path):
+    auth = make_authority(tmp_path)
+    auth.prepare(candidate(), "transaction-row-tamper")
+    conn = sqlite3.connect(auth.path)
+    conn.execute(
+        "UPDATE transactions SET generation=9 WHERE transaction_id=?",
+        ("transaction-row-tamper",),
+    )
+    conn.commit()
+    conn.close()
+    with pytest.raises(CustodyIntegrityError, match="transaction fields disagree"):
+        auth.read_floor("stream-1")
+
+
+def test_authentic_receipt_status_is_never_admission_authority(tmp_path):
+    clock = Clock()
+    auth = make_authority(tmp_path, clock=clock, lease=5)
+    prepared, committed = prepare_commit(auth)
+    prepared_check = auth.verify_receipt(prepared)
+    committed_check = auth.verify_receipt(committed)
+    assert prepared_check.valid and prepared_check.authenticated
+    assert prepared_check.lifecycle_status == ReceiptStatus.PREPARED.value
+    assert not prepared_check.admission_ready
+    assert committed_check.valid and committed_check.authenticated
+    assert committed_check.lifecycle_status == ReceiptStatus.COMMITTED.value
+    assert not committed_check.admission_ready
+
+    rejected = auth.prepare(candidate(b"another-candidate"), "rejected-receipt")
+    assert rejected.custody_state == ReceiptStatus.REJECTED.value
+    rejected_check = auth.verify_receipt(rejected)
+    assert rejected_check.valid and rejected_check.authenticated
+    assert rejected_check.lifecycle_status == ReceiptStatus.REJECTED.value
+    assert not rejected_check.admission_ready
+
+    expiring = auth.prepare(candidate(b"expiring-candidate"), "expiring-receipt")
+    clock.advance(5)
+    expired = auth.prepare(candidate(b"expiring-candidate"), "expiring-receipt")
+    assert expired.custody_state == ReceiptStatus.EXPIRED.value
+    expired_check = auth.verify_receipt(expired)
+    assert expired_check.valid and expired_check.authenticated
+    assert expired_check.lifecycle_status == ReceiptStatus.EXPIRED.value
+    assert not expired_check.admission_ready
+
