@@ -1,4 +1,6 @@
-# System Sweep Record — 2026-11-27
+# System Sweep Record — 2026-11-27 (Historical Snapshot)
+
+> **Historical status note:** This file records the repository state at the time of the original sweep. Its PR #3 draft status and “no merge” statements are historical, not current. See [Installation and Hardening Readiness](../engineering/INSTALLATION_READINESS.md) and the current [Evidence Register](EVIDENCE_REGISTER.md) for the latest repository status.
 
 ## Repository and scope
 
