@@ -473,10 +473,16 @@ class SimulatedCustodyAuthority:
         )
         self._meta_set(conn, "event_head", event_hash)
 
-    def _verify_journal(self, conn: sqlite3.Connection) -> None:
+    def _verified_journal_events(self, conn: sqlite3.Connection) -> list[tuple[sqlite3.Row, dict[str, Any]]]:
+        """Authenticate an ordered, gap-free, duplicate-free event chain."""
         previous = GENESIS_DIGEST
+        seen_hashes: set[str] = set()
+        seen_entries: set[tuple[str, str | None, str]] = set()
+        verified: list[tuple[sqlite3.Row, dict[str, Any]]] = []
         rows = conn.execute("SELECT * FROM journal_events ORDER BY event_no").fetchall()
-        for row in rows:
+        for expected_no, row in enumerate(rows, start=1):
+            if row["event_no"] != expected_no:
+                raise CustodyIntegrityError("custody journal event sequence has a gap or reordering")
             if row["previous_hash"] != previous:
                 raise CustodyIntegrityError("custody journal hash-chain discontinuity")
             body = {
@@ -493,43 +499,297 @@ class SimulatedCustodyAuthority:
             expected = hmac.new(key, canonical({**body, "event_hash": event_hash}), hashlib.sha256).hexdigest()
             if not hmac.compare_digest(event_hash, row["event_hash"]) or not hmac.compare_digest(expected, row["mac"]):
                 raise CustodyIntegrityError("custody journal authentication failed")
+            if event_hash in seen_hashes:
+                raise CustodyIntegrityError("duplicate custody journal event hash")
+            entry_identity = (row["event_type"], row["transaction_id"], row["payload_json"])
+            if entry_identity in seen_entries:
+                raise CustodyIntegrityError("duplicate custody journal event entry")
+            try:
+                payload = json.loads(row["payload_json"])
+            except Exception as exc:
+                raise CustodyIntegrityError("custody journal payload is not valid JSON") from exc
+            if not isinstance(payload, dict):
+                raise CustodyIntegrityError("custody journal payload must be an object")
+            seen_hashes.add(event_hash)
+            seen_entries.add(entry_identity)
             previous = event_hash
+            verified.append((row, payload))
         if self._meta_get(conn, "event_head") != previous:
             raise CustodyIntegrityError("custody journal head does not match authenticated history")
+        return verified
+
+    def _verify_journal(self, conn: sqlite3.Connection) -> None:
+        self._verified_journal_events(conn)
 
     def _verify_state(self, conn: sqlite3.Connection) -> None:
-        self._verify_journal(conn)
+        """Reconstruct custody state from authenticated events and compare every mutable table."""
+        events = self._verified_journal_events(conn)
+        receipt_rows = conn.execute("SELECT * FROM receipts ORDER BY receipt_id").fetchall()
+        receipts: dict[str, CustodyReceipt] = {}
+        for row in receipt_rows:
+            receipt = self._decode_receipt(row["receipt_json"])
+            if receipt is None or receipt.receipt_id != row["receipt_id"]:
+                raise CustodyIntegrityError("receipt history identity mismatch")
+            if row["transaction_id"] != receipt.transaction_id or row["custody_state"] != receipt.custody_state:
+                raise CustodyIntegrityError("receipt history metadata disagrees with signed receipt")
+            if not self._verify_signature_only(receipt):
+                raise CustodyIntegrityError("receipt history contains an unauthenticated receipt")
+            if receipt.receipt_id in receipts:
+                raise CustodyIntegrityError("duplicate receipt history identity")
+            receipts[receipt.receipt_id] = receipt
+
+        referenced_receipts: set[str] = set()
+        latest_tx_receipt: dict[str, CustodyReceipt] = {}
+        tx_status: dict[str, str] = {}
+        tx_prepared_payload: dict[str, dict[str, Any]] = {}
+        latest_committed: dict[str, dict[str, Any]] = {}
+        recovery_events: dict[str, tuple[sqlite3.Row, dict[str, Any], CustodyReceipt]] = {}
+        consumed_recoveries: dict[str, str] = {}
+        epoch = 0
+        active_key_id = self._initial_active_key_id
+        authority_revoked = False
+        revoked: dict[str, dict[str, Any]] = {}
+
+        state_events = {
+            "PREPARED": ReceiptStatus.PREPARED.value,
+            "PREPARE_REJECTED": ReceiptStatus.REJECTED.value,
+            "COMMIT_REJECTED": ReceiptStatus.REJECTED.value,
+            "RESERVATION_EXPIRED": ReceiptStatus.EXPIRED.value,
+            "COMMIT_EXPIRED": ReceiptStatus.EXPIRED.value,
+            "COMMITTED": ReceiptStatus.COMMITTED.value,
+            "RECOVERY_AUTHORIZED": ReceiptStatus.RECOVERY_AUTHORIZED.value,
+            "AUTHORITY_KEY_REVOKED": ReceiptStatus.COMMITTED.value,
+            "AUTHORITY_REVOKED": ReceiptStatus.COMMITTED.value,
+        }
+        for row, payload in events:
+            event_type = row["event_type"]
+            txid = row["transaction_id"]
+            receipt_id = payload.get("receipt_id")
+            if receipt_id is not None:
+                if not isinstance(receipt_id, str) or receipt_id in referenced_receipts:
+                    raise CustodyIntegrityError("journal contains a duplicate or invalid receipt reference")
+                receipt = receipts.get(receipt_id)
+                if receipt is None:
+                    raise CustodyIntegrityError("journal references a missing receipt-history record")
+                if receipt.transaction_id != txid:
+                    raise CustodyIntegrityError("journal receipt transaction binding mismatch")
+                expected_status = state_events.get(event_type)
+                if event_type == "COMMIT_REPLAY_REJECTED":
+                    expected_status = ReceiptStatus.REJECTED.value
+                if expected_status is None or receipt.custody_state != expected_status:
+                    raise CustodyIntegrityError("journal event lifecycle does not match signed receipt status")
+                referenced_receipts.add(receipt_id)
+                if event_type != "COMMIT_REPLAY_REJECTED" and txid is not None:
+                    latest_tx_receipt[txid] = receipt
+                    tx_status[txid] = expected_status
+                if event_type == "PREPARED":
+                    tx_prepared_payload[txid] = payload
+                if event_type == "RECOVERY_AUTHORIZED":
+                    auth_id = payload.get("recovery_authorization_id")
+                    if not isinstance(auth_id, str) or auth_id in recovery_events:
+                        raise CustodyIntegrityError("duplicate or invalid recovery authorization event")
+                    recovery_events[auth_id] = (row, payload, receipt)
+
+            elif event_type in state_events or event_type == "COMMIT_REPLAY_REJECTED":
+                raise CustodyIntegrityError("state-changing journal event is missing its receipt reference")
+
+            if event_type == "COMMITTED":
+                required = (
+                    "stream_id", "lineage_id", "generation", "sequence_no",
+                    "checkpoint_digest", "previous_checkpoint_digest",
+                )
+                if any(field not in payload for field in required):
+                    raise CustodyIntegrityError("committed event is missing checkpoint ordering fields")
+                stream_id = payload["stream_id"]
+                if not isinstance(stream_id, str):
+                    raise CustodyIntegrityError("committed event has invalid stream identity")
+                receipt = receipts.get(receipt_id)
+                if receipt is None or (
+                    receipt.stream_id != stream_id
+                    or receipt.lineage_id != payload["lineage_id"]
+                    or receipt.generation != payload["generation"]
+                    or receipt.sequence_no != payload["sequence_no"]
+                    or receipt.checkpoint_digest != payload["checkpoint_digest"]
+                    or receipt.previous_checkpoint_digest != payload["previous_checkpoint_digest"]
+                ):
+                    raise CustodyIntegrityError("committed event disagrees with its signed receipt")
+                previous = latest_committed.get(stream_id)
+                if previous is None:
+                    valid_order = (
+                        payload["generation"] == 0
+                        and payload["sequence_no"] == 0
+                        and payload["previous_checkpoint_digest"] == GENESIS_DIGEST
+                        and payload.get("recovery_authorization_id") is None
+                    )
+                elif (
+                    payload["lineage_id"] == previous["lineage_id"]
+                    and payload["generation"] == previous["generation"]
+                ):
+                    valid_order = (
+                        payload["sequence_no"] == previous["sequence_no"] + 1
+                        and payload["previous_checkpoint_digest"] == previous["checkpoint_digest"]
+                        and payload.get("recovery_authorization_id") is None
+                    )
+                else:
+                    auth_id = payload.get("recovery_authorization_id")
+                    valid_order = (
+                        isinstance(auth_id, str)
+                        and payload["generation"] > previous["generation"]
+                        and payload["sequence_no"] == 0
+                        and payload["previous_checkpoint_digest"] == previous["checkpoint_digest"]
+                        and payload.get("previous_lineage_id") == previous["lineage_id"]
+                        and payload.get("previous_generation") == previous["generation"]
+                        and payload.get("target_generation") == payload["generation"]
+                        and payload.get("lineage_parent_id") is not None
+                    )
+                    if valid_order:
+                        if auth_id in consumed_recoveries:
+                            raise CustodyIntegrityError("recovery authorization was consumed more than once")
+                        consumed_recoveries[auth_id] = str(txid)
+                if not valid_order:
+                    raise CustodyIntegrityError("committed checkpoint history is non-monotonic or has a broken chain link")
+                latest_committed[stream_id] = {
+                    "stream_id": stream_id,
+                    "lineage_id": payload["lineage_id"],
+                    "generation": payload["generation"],
+                    "sequence_no": payload["sequence_no"],
+                    "checkpoint_digest": payload["checkpoint_digest"],
+                    "previous_checkpoint_digest": payload["previous_checkpoint_digest"],
+                    "receipt_id": receipt_id,
+                    "transaction_id": txid,
+                    "authority_epoch": receipt.authority_epoch,
+                }
+
+            if event_type == "AUTHORITY_KEY_REVOKED":
+                target = payload.get("target_key_id")
+                new_active = payload.get("new_active_key_id")
+                next_epoch = payload.get("authority_epoch")
+                if (
+                    not isinstance(target, str) or target in revoked
+                    or next_epoch != epoch + 1
+                    or not isinstance(new_active, str) or new_active not in self._keys
+                    or new_active == target or new_active in revoked
+                    or authority_revoked
+                ):
+                    raise CustodyIntegrityError("authority key transition is inconsistent or non-monotonic")
+                if receipt is None or receipt.key_id != new_active or receipt.authority_epoch != next_epoch:
+                    raise CustodyIntegrityError("authority key transition receipt binding mismatch")
+                revoked[target] = {
+                    "authority_epoch": next_epoch,
+                    "reason_code": payload.get("reason"),
+                    "revoked_at": payload.get("revoked_at"),
+                }
+                epoch = next_epoch
+                active_key_id = new_active
+            elif event_type == "AUTHORITY_REVOKED":
+                next_epoch = payload.get("authority_epoch")
+                if authority_revoked or next_epoch != epoch + 1:
+                    raise CustodyIntegrityError("authority revocation epoch is inconsistent")
+                if receipt is None or receipt.authority_epoch != next_epoch:
+                    raise CustodyIntegrityError("authority revocation receipt binding mismatch")
+                epoch = next_epoch
+                active_key_id = payload.get("new_active_key_id")
+                authority_revoked = True
+
+        if set(receipts) != referenced_receipts:
+            raise CustodyIntegrityError("receipt history contains orphaned or unreferenced records")
+
         transactions = conn.execute("SELECT * FROM transactions ORDER BY transaction_id").fetchall()
+        transaction_ids = {tx["transaction_id"] for tx in transactions}
+        if transaction_ids != set(latest_tx_receipt):
+            raise CustodyIntegrityError("transaction table does not match authenticated lifecycle history")
         for tx in transactions:
-            receipt = self._decode_receipt(tx["receipt_json"])
-            if receipt is None or receipt.transaction_id != tx["transaction_id"]:
-                raise CustodyIntegrityError("transaction journal receipt binding is missing or incorrect")
-            if receipt.custody_state != tx["status"] or not self._verify_signature_only(receipt):
+            receipt = latest_tx_receipt[tx["transaction_id"]]
+            if (
+                tx["status"] != tx_status[tx["transaction_id"]]
+                or self._decode_receipt(tx["receipt_json"]) != receipt
+                or receipt.transaction_id != tx["transaction_id"]
+                or receipt.custody_state != tx["status"]
+            ):
                 raise CustodyIntegrityError("transaction status/receipt authentication mismatch")
+            prepared_payload = tx_prepared_payload.get(tx["transaction_id"])
+            if prepared_payload is None:
+                raise CustodyIntegrityError("transaction has no authenticated PREPARED event")
+            candidate_json = canonical(prepared_payload.get("candidate")).decode("utf-8")
+            if (
+                tx["candidate_json"] != candidate_json
+                or tx["reservation_id"] != prepared_payload.get("reservation_id")
+                or tx["lease_expires_at"] != prepared_payload.get("lease_expires_at")
+                or receipt.reservation_id != tx["reservation_id"]
+            ):
+                raise CustodyIntegrityError("transaction fields disagree with authenticated PREPARED event")
             position = conn.execute(
                 "SELECT * FROM positions WHERE stream_id=? AND lineage_id=? AND generation=? AND sequence_no=?",
                 (tx["stream_id"], tx["lineage_id"], tx["generation"], tx["sequence_no"]),
             ).fetchone()
-            if position is None or position["transaction_id"] != tx["transaction_id"] or position["checkpoint_digest"] != tx["checkpoint_digest"]:
-                raise CustodyIntegrityError("transaction position reservation binding mismatch")
-        floors = conn.execute("SELECT * FROM floors").fetchall()
-        for floor in floors:
-            tx = conn.execute("SELECT * FROM transactions WHERE transaction_id=?", (floor["transaction_id"],)).fetchone()
-            if tx is None or tx["status"] != ReceiptStatus.COMMITTED.value:
-                raise CustodyIntegrityError("floor has no matching committed transaction")
             if (
-                tx["stream_id"] != floor["stream_id"]
-                or tx["lineage_id"] != floor["lineage_id"]
-                or tx["generation"] != floor["generation"]
-                or tx["sequence_no"] != floor["sequence_no"]
-                or tx["checkpoint_digest"] != floor["checkpoint_digest"]
-                or (self._decode_receipt(tx["receipt_json"]) is not None
-                    and self._decode_receipt(tx["receipt_json"]).receipt_id != floor["receipt_id"])
+                position is None
+                or position["transaction_id"] != tx["transaction_id"]
+                or position["checkpoint_digest"] != tx["checkpoint_digest"]
             ):
-                raise CustodyIntegrityError("custody floor disagrees with committed journal transaction")
-            receipt = self._decode_receipt(tx["receipt_json"])
-            if receipt is None or receipt.custody_state != ReceiptStatus.COMMITTED.value or not self._verify_signature_only(receipt):
-                raise CustodyIntegrityError("floor's committed receipt is missing or invalid")
+                raise CustodyIntegrityError("transaction position reservation binding mismatch")
+
+        positions = conn.execute("SELECT * FROM positions").fetchall()
+        if len(positions) != len(transactions):
+            raise CustodyIntegrityError("position table contains missing or orphaned reservations")
+
+        floors = conn.execute("SELECT * FROM floors").fetchall()
+        if {floor["stream_id"] for floor in floors} != set(latest_committed):
+            raise CustodyIntegrityError("floor table does not match committed journal streams")
+        for floor in floors:
+            latest = latest_committed[floor["stream_id"]]
+            for field in (
+                "lineage_id", "generation", "sequence_no", "checkpoint_digest",
+                "previous_checkpoint_digest", "receipt_id", "transaction_id", "authority_epoch",
+            ):
+                if floor[field] != latest[field]:
+                    raise CustodyIntegrityError("custody floor regresses or disagrees with latest committed journal state")
+
+        authorization_rows = conn.execute("SELECT * FROM recovery_authorizations").fetchall()
+        if {row["recovery_authorization_id"] for row in authorization_rows} != set(recovery_events):
+            raise CustodyIntegrityError("recovery authorization table does not match authenticated events")
+        for auth in authorization_rows:
+            auth_id = auth["recovery_authorization_id"]
+            _, payload, signed_receipt = recovery_events[auth_id]
+            if (
+                auth["stream_id"] != payload.get("stream_id")
+                or auth["previous_lineage_id"] != payload.get("previous_lineage_id")
+                or auth["target_lineage_id"] != payload.get("target_lineage_id")
+                or auth["lineage_parent_id"] != payload.get("lineage_parent_id")
+                or auth["previous_generation"] != payload.get("previous_generation")
+                or auth["target_generation"] != payload.get("target_generation")
+                or auth["stream_id"] != signed_receipt.stream_id
+                or auth["previous_lineage_id"] != signed_receipt.previous_lineage_id
+                or auth["target_lineage_id"] != signed_receipt.lineage_id
+                or auth["lineage_parent_id"] != signed_receipt.lineage_parent_id
+                or auth["previous_generation"] != signed_receipt.previous_generation
+                or auth["target_generation"] != signed_receipt.target_generation
+                or auth_id != signed_receipt.recovery_authorization_id
+                or canonical(json.loads(auth["receipt_json"])) != canonical(signed_receipt.as_dict())
+                or auth["consumed_by"] != consumed_recoveries.get(auth_id)
+            ):
+                raise CustodyIntegrityError("recovery authorization row disagrees with signed receipt or journal history")
+
+        revocation_rows = conn.execute("SELECT * FROM revocations").fetchall()
+        if {row["key_id"] for row in revocation_rows} != set(revoked):
+            raise CustodyIntegrityError("revocation table does not match authenticated authority history")
+        for row in revocation_rows:
+            expected = revoked[row["key_id"]]
+            if (
+                row["authority_epoch"] != expected["authority_epoch"]
+                or row["reason_code"] != expected["reason_code"]
+                or row["revoked_at"] != expected["revoked_at"]
+            ):
+                raise CustodyIntegrityError("revocation row disagrees with authenticated authority history")
+
+        if (
+            int(self._meta_get(conn, "authority_epoch")) != epoch
+            or self._meta_get(conn, "active_key_id") != active_key_id
+            or self._meta_get(conn, "authority_revoked") != ("1" if authority_revoked else "0")
+        ):
+            raise CustodyIntegrityError("authority metadata disagrees with authenticated journal history")
+        if active_key_id in revoked:
+            raise CustodyIntegrityError("authenticated authority state attempts to resurrect a revoked key")
 
     @staticmethod
     def _decode_receipt(raw: str | None) -> CustodyReceipt | None:
@@ -804,8 +1064,14 @@ class SimulatedCustodyAuthority:
             self._store_receipt(conn, receipt)
             self._append_event(conn, "COMMITTED", transaction_id, {
                 "receipt_id": receipt.receipt_id, "checkpoint_digest": candidate.checkpoint_digest,
+                "previous_checkpoint_digest": candidate.previous_checkpoint_digest,
                 "stream_id": candidate.stream_id, "lineage_id": candidate.lineage_id,
                 "generation": candidate.generation, "sequence_no": candidate.sequence_no,
+                "recovery_authorization_id": candidate.recovery_authorization_id,
+                "previous_lineage_id": candidate.previous_lineage_id,
+                "lineage_parent_id": candidate.lineage_parent_id,
+                "previous_generation": candidate.previous_generation,
+                "target_generation": candidate.target_generation,
                 "persistence_evidence_id": evidence.evidence_id,
                 "persistence_evidence_kind": evidence.evidence_kind,
                 "persistence_digest_verified": True,
@@ -1004,15 +1270,19 @@ class SimulatedCustodyAuthority:
             receipt = self._make_receipt(conn, transaction_id=txid, operation="revoke_authority",
                 custody_state=ReceiptStatus.COMMITTED, reason_code=receipt_reason,
                 key_override=(new_active, self._keys[new_active], new_authority_epoch))
+            revoked_at = self._now() if target_key_id is not None else None
             if target_key_id is not None:
                 conn.execute("INSERT INTO revocations(key_id,revoked_at,authority_epoch,reason_code) VALUES(?,?,?,?)",
-                    (target_key_id, self._now(), new_authority_epoch, reason))
+                    (target_key_id, revoked_at, new_authority_epoch, reason))
             self._meta_set(conn, "authority_epoch", str(new_authority_epoch))
             self._meta_set(conn, "active_key_id", new_active)
             self._store_receipt(conn, receipt)
             self._append_event(conn, event_type, txid, {
                 "target_key_id": target_key_id, "target_authority_id": target_authority_id,
                 "authority_epoch": new_authority_epoch, "reason": reason,
+                "new_active_key_id": new_active,
+                "authority_revoked": target_authority_id is not None,
+                "revoked_at": revoked_at,
                 "authorization_proof_digest": sha256_hex(authorization_proof.encode()),
                 "receipt_id": receipt.receipt_id,
             })
