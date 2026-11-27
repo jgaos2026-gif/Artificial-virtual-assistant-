@@ -997,7 +997,8 @@ class SimulatedCustodyAuthority:
                 if new_active == target_key_id or new_active not in self._keys:
                     raise CustodyRejected("NO_ACTIVE_SIGNING_KEY", "a distinct configured signing key is required")
                 if conn.execute("SELECT 1 FROM revocations WHERE key_id=?", (new_active,)).fetchone():
-                    raise CustodyRejected("REVOKED_KEY", "replacement signing key is revoked")                receipt_reason = f"REVOKED:{target_key_id}"
+                    raise CustodyRejected("REVOKED_KEY", "replacement signing key is revoked")
+                receipt_reason = f"REVOKED:{target_key_id}"
                 event_type = "AUTHORITY_KEY_REVOKED"
             # Sign the revocation outcome with the post-transition epoch.
             receipt = self._make_receipt(conn, transaction_id=txid, operation="revoke_authority",
