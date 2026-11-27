@@ -30,6 +30,15 @@ class AnchorError(PermissionError):
 
 
 @dataclass(frozen=True)
+class AnchorProposal:
+    """Unsigned checkpoint request; only the authority creates signed snapshots."""
+    stream_id: str
+    generation: int
+    record_count: int
+    head_hash: str
+
+
+@dataclass(frozen=True)
 class AnchorSnapshot:
     stream_id: str
     generation: int
@@ -58,9 +67,9 @@ class BrickPin:
 class AnchorAuthority(Protocol):
     """Must be backed by a trust/failure domain outside the COLD archive."""
     def read(self, stream_id: str) -> AnchorSnapshot | None: ...
-    def provision(self, initial: AnchorSnapshot) -> AnchorSnapshot: ...
+    def provision(self, initial: AnchorProposal) -> AnchorSnapshot: ...
     def compare_and_advance(
-        self, expected_generation: int, proposed: AnchorSnapshot
+        self, expected_generation: int, proposed: AnchorProposal
     ) -> AnchorSnapshot: ...
     def verify(self, snapshot: AnchorSnapshot) -> bool: ...
 
@@ -329,10 +338,7 @@ class AnchoredColdLog:
                     stream.write(raw)
                     stream.flush()
                     os.fsync(stream.fileno())
-                proposed = AnchorSnapshot(
-                    self.stream_id, current.generation + 1, count + 1,
-                    digest, current.authority_id, current.signature_hex,
-                )
+                proposed = AnchorProposal(self.stream_id, current.generation + 1, count + 1, digest)
                 advanced = self.authority.compare_and_advance(current.generation, proposed)
                 _validate_snapshot(advanced, self.stream_id)
                 if not self.authority.verify(advanced):
