@@ -13,7 +13,9 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import struct
+import tempfile
 from typing import Iterator, Protocol
 
 MAX_FRAME_BYTES = 1_048_576
@@ -216,57 +218,80 @@ class AnchoredColdLog:
         if count != snapshot.record_count or head != snapshot.head_hash:
             raise AnchorError("COLD log does not match independent monotonic checkpoint")
 
-    def _scan(self) -> tuple[int, str, set[str]]:
+    def _scan(self, target_record_id: str | None = None) -> tuple[int, str, bool]:
+        """Stream frames; use a disk-backed temporary uniqueness index, not a RAM set."""
         previous = self.GENESIS
         count = 0
-        seen: set[str] = set()
+        target_seen = False
         try:
-            with self.path.open("rb") as stream:
-                while True:
-                    prefix = stream.read(4)
-                    if not prefix:
-                        break
-                    if len(prefix) != 4:
-                        raise AnchorError("truncated COLD frame length")
-                    size = struct.unpack(">I", prefix)[0]
-                    if size < 1 or size > MAX_FRAME_BYTES:
-                        raise AnchorError("COLD frame size outside bounds")
-                    raw = stream.read(size)
-                    if len(raw) != size:
-                        raise AnchorError("truncated COLD frame body")
-                    try:
-                        envelope = json.loads(raw)
-                    except Exception as exc:
-                        raise AnchorError("malformed COLD frame JSON") from exc
-                    if not isinstance(envelope, dict) or set(envelope) != {
-                        "sequence", "previous_hash", "record_id", "kind", "payload", "entry_hash"
-                    }:
-                        raise AnchorError("COLD frame schema mismatch")
-                    rid, kind, payload = envelope["record_id"], envelope["kind"], envelope["payload"]
-                    if not isinstance(rid, str) or not _RECORD_RE.fullmatch(rid):
-                        raise AnchorError("record_id is invalid")
-                    if rid in seen:
-                        raise AnchorError("duplicate record_id")
-                    if not isinstance(kind, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", kind):
-                        raise AnchorError("record kind is invalid")
-                    if not isinstance(payload, dict):
-                        raise AnchorError("record payload must be an object")
-                    if type(envelope["sequence"]) is not int or envelope["sequence"] != count:
-                        raise AnchorError("COLD sequence mismatch")
-                    if envelope["previous_hash"] != previous:
-                        raise AnchorError("COLD previous hash mismatch")
-                    body = {k: envelope[k] for k in ("sequence", "previous_hash", "record_id", "kind", "payload")}
-                    digest = hashlib.sha256(_canonical(body)).hexdigest()
-                    if envelope["entry_hash"] != digest:
-                        raise AnchorError("COLD frame digest mismatch")
-                    previous = digest
-                    seen.add(rid)
-                    count += 1
+            with tempfile.TemporaryDirectory(prefix="ava-cold-verify-") as temp_dir:
+                db = sqlite3.connect(str(Path(temp_dir) / "seen.sqlite"))
+                try:
+                    db.execute("PRAGMA cache_size=-1024")
+                    db.execute("PRAGMA temp_store=FILE")
+                    db.execute("CREATE TABLE seen_ids (record_id TEXT PRIMARY KEY) WITHOUT ROWID")
+                    with self.path.open("rb") as stream:
+                        while True:
+                            prefix = stream.read(4)
+                            if not prefix:
+                                break
+                            if len(prefix) != 4:
+                                raise AnchorError("truncated COLD frame length")
+                            size = struct.unpack(">I", prefix)[0]
+                            if size < 1 or size > MAX_FRAME_BYTES:
+                                raise AnchorError("COLD frame size outside bounds")
+                            raw = stream.read(size)
+                            if len(raw) != size:
+                                raise AnchorError("truncated COLD frame body")
+                            try:
+                                envelope = json.loads(raw, object_pairs_hook=self._unique_json_object)
+                            except AnchorError:
+                                raise
+                            except Exception as exc:
+                                raise AnchorError("malformed COLD frame JSON") from exc
+                            if not isinstance(envelope, dict) or set(envelope) != {
+                                "sequence", "previous_hash", "record_id", "kind", "payload", "entry_hash"
+                            }:
+                                raise AnchorError("COLD frame schema mismatch")
+                            rid, kind, payload = envelope["record_id"], envelope["kind"], envelope["payload"]
+                            if not isinstance(rid, str) or not _RECORD_RE.fullmatch(rid):
+                                raise AnchorError("record_id is invalid")
+                            try:
+                                db.execute("INSERT INTO seen_ids(record_id) VALUES (?)", (rid,))
+                            except sqlite3.IntegrityError as exc:
+                                raise AnchorError("duplicate record_id in COLD archive") from exc
+                            if target_record_id is not None and rid == target_record_id:
+                                target_seen = True
+                            if not isinstance(kind, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", kind):
+                                raise AnchorError("record kind is invalid")
+                            if not isinstance(payload, dict):
+                                raise AnchorError("record payload must be an object")
+                            if type(envelope["sequence"]) is not int or envelope["sequence"] != count:
+                                raise AnchorError("COLD sequence mismatch")
+                            if envelope["previous_hash"] != previous:
+                                raise AnchorError("COLD previous hash mismatch")
+                            body = {k: envelope[k] for k in ("sequence", "previous_hash", "record_id", "kind", "payload")}
+                            digest = hashlib.sha256(_canonical(body)).hexdigest()
+                            if envelope["entry_hash"] != digest:
+                                raise AnchorError("COLD frame digest mismatch")
+                            previous = digest
+                            count += 1
+                finally:
+                    db.close()
         except AnchorError:
             raise
         except Exception as exc:
             raise AnchorError("COLD stream verification failed") from exc
-        return count, previous, seen
+        return count, previous, target_seen
+
+    @staticmethod
+    def _unique_json_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise AnchorError("duplicate JSON object key")
+            result[key] = value
+        return result
 
     def append(self, record_id: str, kind: str, payload: dict) -> AnchorSnapshot:
         if not isinstance(record_id, str) or not _RECORD_RE.fullmatch(record_id):
@@ -286,8 +311,8 @@ class AnchoredColdLog:
             if current is None:
                 raise AnchorError("MISSING_ANCHOR: refusing append")
             self._verify_snapshot(current)
-            count, head, seen = self._scan()
-            if record_id in seen:
+            count, head, duplicate = self._scan(record_id)
+            if duplicate:
                 raise AnchorError("duplicate record_id")
             body = {
                 "sequence": count, "previous_hash": head, "record_id": record_id,
