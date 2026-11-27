@@ -189,7 +189,7 @@ class ColdHistoryProvenanceClassifier:
                 continue
             status=ProvenanceStatus.UNANCHORED
             reason="no authenticated anchor boundary"
-            if authority and valid and i>=baseline.anchor_start_index:
+            if authority and valid and i>=max(baseline.anchor_start_index, baseline.baseline_record_count):
                 boundary=baseline.baseline_record_count
                 cp_count=checkpoint.checkpoint_record_count
                 boundary_ok=(boundary in prefix_heads and prefix_heads[boundary]==baseline.baseline_head_hash)
@@ -199,6 +199,17 @@ class ColdHistoryProvenanceClassifier:
             results.append(RecordResult(i,status,reason))
         if not inspection_complete:
             results.append(RecordResult(len(material),ProvenanceStatus.NOT_INSPECTED,"input inspection incomplete"))
+        # Authority is not considered verified until both authenticated boundaries
+        # are bound to exact heads in the inspected COLD prefix.
+        baseline_count=baseline.baseline_record_count
+        checkpoint_count=checkpoint.checkpoint_record_count
+        boundary_bound=(baseline_count in prefix_heads and prefix_heads[baseline_count]==baseline.baseline_head_hash)
+        checkpoint_bound=(checkpoint_count in prefix_heads and prefix_heads[checkpoint_count]==checkpoint.checkpoint_head_hash)
+        authority=bool(authority and boundary_bound and checkpoint_bound)
+        if not authority:
+            results=[RecordResult(x.index, ProvenanceStatus.UNANCHORED if x.status==ProvenanceStatus.ANCHORED else x.status,
+                                  "authenticated checkpoint/baseline does not bind to inspected COLD chain" if x.status==ProvenanceStatus.ANCHORED else x.reason)
+                     for x in results]
         evidence=valid and inspection_complete and omitted_records_count==0
         eligible=bool(authority and evidence and consistent_read_guaranteed and all(x.status!=ProvenanceStatus.INVALID for x in results))
         if not authority: diagnostics.append("authority verification failed")

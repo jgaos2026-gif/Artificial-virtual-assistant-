@@ -21,60 +21,86 @@ def _safe_view(value):
     return MappingProxyType({"_malformed":repr(type(value).__name__)})
 
 def _read_jsonl(path, *, max_records=100000, max_line_bytes=1048576):
-    if type(max_records) is not int or max_records<1: raise ValueError("max_records must be positive")
-    if type(max_line_bytes) is not int or max_line_bytes<1: raise ValueError("max_line_bytes must be positive")
-    flags=os.O_RDONLY|getattr(os,"O_NOFOLLOW",0)
-    fd=os.open(path,flags); records=[]; buf=bytearray(); omitted=0; line_no=0; complete=True; diagnostics=[]
+    """Read JSONL with per-line bounds.
+
+    omitted_records_count is the number of complete records observed after the
+    max_records cutoff. It is a lower bound: an unterminated final record is
+    not counted. Any cutoff makes omitted_count_exact false.
+    Oversized lines are drained only through their own newline; subsequent
+    lines remain eligible for parsing.
+    """
+    if type(max_records) is not int or max_records < 1: raise ValueError("max_records must be positive")
+    if type(max_line_bytes) is not int or max_line_bytes < 1: raise ValueError("max_line_bytes must be positive")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    records, diagnostics = [], []
+    line = bytearray()
+    line_no = 0
+    omitted = 0
+    complete = True
+    oversized = False
+    cutoff_seen = False
     try:
-        if not __import__("stat").S_ISREG(os.fstat(fd).st_mode): raise ValueError("COLD source must be a regular file")
-        eof=False; truncated=False
-        while not eof:
-            chunk=os.read(fd,65536)
-            if not chunk: eof=True
-            pos=0
-            while pos<len(chunk):
-                nl=chunk.find(b"\n",pos)
-                end=len(chunk) if nl<0 else nl
-                part=chunk[pos:end]
-                if not truncated and line_no<max_records:
-                    if len(buf)+len(part)>max_line_bytes:
+        if not __import__("stat").S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("COLD source must be a regular file")
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            pos = 0
+            while pos < len(chunk):
+                nl = chunk.find(b"\\n", pos)
+                stop = len(chunk) if nl < 0 else nl
+                piece = chunk[pos:stop]
+                if line_no >= max_records:
+                    cutoff_seen = True
+                    complete = False
+                    if nl >= 0:
+                        omitted += 1
+                elif not oversized:
+                    if len(line) + len(piece) > max_line_bytes:
                         diagnostics.append(f"line {line_no} exceeds max_line_bytes")
-                        # Drain only through this line's newline; tail remains in chunk.
-                        truncated=True; complete=False; buf.clear()
+                        complete = False
+                        oversized = True
+                        line.clear()
                     else:
-                        buf.extend(part)
-                else:
-                    truncated=True; complete=False
-                    if nl>=0: omitted+=1
-                    elif eof and part: omitted+=1
-                if nl>=0:
-                    if not truncated and line_no<max_records:
+                        line.extend(piece)
+                if nl >= 0:
+                    if line_no < max_records and not oversized:
                         try:
-                            item=json.loads(buf.decode("utf-8"))
-                            if not isinstance(item,dict): raise ValueError("record must be an object")
+                            item = json.loads(line.decode("utf-8"))
+                            if not isinstance(item, dict):
+                                raise ValueError("record must be an object")
                             records.append(item)
-                        except Exception as exc: records.append({"_malformed":str(exc)}); diagnostics.append(f"line {line_no} malformed")
-                    elif truncated and line_no>=max_records:
-                        omitted+=0
-                    line_no+=1; buf.clear()
-                    if line_no>=max_records: truncated=True; complete=False
-                    pos=nl+1
+                        except Exception as exc:
+                            records.append({"_malformed": str(exc)})
+                            diagnostics.append(f"line {line_no} malformed")
+                            complete = False
+                    line_no += 1
+                    line.clear()
+                    oversized = False
+                    pos = nl + 1
                 else:
-                    if not truncated and line_no<max_records: buf.extend(b"")
-                    pos=len(chunk)
-            if eof and buf and not truncated and line_no<max_records:
-                try:
-                    item=json.loads(buf.decode("utf-8"))
-                    if not isinstance(item,dict): raise ValueError("record must be object")
-                    records.append(item)
-                except Exception as exc: records.append({"_malformed":str(exc)}); diagnostics.append(f"line {line_no} malformed")
-                buf.clear()
-            if eof and truncated: complete=False
-        # Exact cutoff: if exactly max_records terminated by EOF, it is complete.
-        if line_no==max_records and eof and not truncated:
-            complete=True
-    finally: os.close(fd)
-    return records,complete,omitted,diagnostics
+                    pos = len(chunk)
+        # EOF may terminate a final record without a newline.
+        if line_no < max_records and not oversized and line:
+            try:
+                item = json.loads(line.decode("utf-8"))
+                if not isinstance(item, dict):
+                    raise ValueError("record must be an object")
+                records.append(item)
+            except Exception as exc:
+                records.append({"_malformed": str(exc)})
+                diagnostics.append(f"line {line_no} malformed")
+                complete = False
+        elif line_no >= max_records and line:
+            cutoff_seen = True
+            complete = False
+        if cutoff_seen:
+            complete = False
+    finally:
+        os.close(fd)
+    return records, complete, omitted, diagnostics
 
 def read_braided_stream(path, *, classifier: ColdHistoryProvenanceClassifier, snapshot: ColdSnapshot,
                         baseline: AnchorBaseline, checkpoint: MonotonicCheckpoint,
