@@ -785,15 +785,23 @@ class SimulatedCustodyAuthority:
                 "SELECT * FROM positions WHERE stream_id=? AND lineage_id=? AND generation=? AND sequence_no=?",
                 (tx["stream_id"], tx["lineage_id"], tx["generation"], tx["sequence_no"]),
             ).fetchone()
-            if (
-                position is None
-                or position["transaction_id"] != tx["transaction_id"]
-                or position["checkpoint_digest"] != tx["checkpoint_digest"]
-            ):
-                raise CustodyIntegrityError("transaction position reservation binding mismatch")
+            owns_position = tx["status"] in (ReceiptStatus.PREPARED.value, ReceiptStatus.COMMITTED.value)
+            if owns_position:
+                if (
+                    position is None
+                    or position["transaction_id"] != tx["transaction_id"]
+                    or position["checkpoint_digest"] != tx["checkpoint_digest"]
+                ):
+                    raise CustodyIntegrityError("transaction position reservation binding mismatch")
+            elif position is not None:
+                raise CustodyIntegrityError("inactive transaction still owns a reserved position")
 
         positions = conn.execute("SELECT * FROM positions").fetchall()
-        if len(positions) != len(transactions):
+        expected_position_count = sum(
+            1 for tx in transactions
+            if tx["status"] in (ReceiptStatus.PREPARED.value, ReceiptStatus.COMMITTED.value)
+        )
+        if len(positions) != expected_position_count:
             raise CustodyIntegrityError("position table contains missing or orphaned reservations")
 
         floors = conn.execute("SELECT * FROM floors").fetchall()
@@ -959,6 +967,40 @@ class SimulatedCustodyAuthority:
         self._append_event(conn, "PREPARE_REJECTED", transaction_id, {"reason_code": reason_code, "candidate": candidate.as_dict(), "receipt_id": receipt.receipt_id})
         return receipt
 
+    def _expire_position_reservation(
+        self, conn: sqlite3.Connection, candidate: CheckpointCandidate, now: float
+    ) -> bool:
+        """Expire and release a stale PREPARED owner before a position is reacquired."""
+        position = conn.execute(
+            "SELECT * FROM positions WHERE stream_id=? AND lineage_id=? AND generation=? AND sequence_no=?",
+            (candidate.stream_id, candidate.lineage_id, candidate.generation, candidate.sequence_no),
+        ).fetchone()
+        if position is None:
+            return False
+        tx = conn.execute(
+            "SELECT * FROM transactions WHERE transaction_id=?",
+            (position["transaction_id"],),
+        ).fetchone()
+        if tx is None or tx["status"] != ReceiptStatus.PREPARED.value:
+            return False
+        if now < float(tx["lease_expires_at"]):
+            return False
+        prior_candidate = CheckpointCandidate(**json.loads(tx["candidate_json"]))
+        expired = self._make_receipt(
+            conn, transaction_id=tx["transaction_id"], operation="prepare",
+            custody_state=ReceiptStatus.EXPIRED, candidate=prior_candidate,
+            reservation_id=tx["reservation_id"], lease_expires_at=tx["lease_expires_at"],
+            reason_code="LEASE_EXPIRED", issued_at=now,
+        )
+        conn.execute(
+            "UPDATE transactions SET status=?,receipt_json=?,updated_at=? WHERE transaction_id=?",
+            (ReceiptStatus.EXPIRED.value, canonical(expired.as_dict()).decode(), now, tx["transaction_id"]),
+        )
+        self._store_receipt(conn, expired)
+        self._append_event(conn, "RESERVATION_EXPIRED", tx["transaction_id"], {"receipt_id": expired.receipt_id})
+        conn.execute("DELETE FROM positions WHERE transaction_id=?", (tx["transaction_id"],))
+        return True
+
     def prepare(self, candidate: CheckpointCandidate, transaction_id: str) -> CustodyReceipt:
         self._validate_candidate(candidate)
         if not isinstance(transaction_id, str) or not _ID.fullmatch(transaction_id):
@@ -981,6 +1023,7 @@ class SimulatedCustodyAuthority:
                         reason_code="LEASE_EXPIRED")
                     conn.execute("UPDATE transactions SET status=?,receipt_json=?,updated_at=? WHERE transaction_id=?",
                                  (ReceiptStatus.EXPIRED.value, canonical(expired.as_dict()).decode(), self._now(), transaction_id))
+                    conn.execute("DELETE FROM positions WHERE transaction_id=?", (transaction_id,))
                     self._store_receipt(conn, expired)
                     self._append_event(conn, "RESERVATION_EXPIRED", transaction_id, {"receipt_id": expired.receipt_id})
                     conn.commit()
@@ -996,6 +1039,8 @@ class SimulatedCustodyAuthority:
                 receipt = self._rejection_receipt(conn, transaction_id, candidate, exc.reason_code)
                 conn.commit()
                 return receipt
+            now = self._now()
+            self._expire_position_reservation(conn, candidate, now)
             pos = conn.execute("SELECT * FROM positions WHERE stream_id=? AND lineage_id=? AND generation=? AND sequence_no=?",
                 (candidate.stream_id, candidate.lineage_id, candidate.generation, candidate.sequence_no)).fetchone()
             if pos is not None:
@@ -1003,7 +1048,6 @@ class SimulatedCustodyAuthority:
                 conn.commit()
                 return receipt
             reservation_id = str(uuid.uuid4())
-            now = self._now()
             lease_expires_at = now + self.lease_seconds
             receipt = self._make_receipt(conn, transaction_id=transaction_id, operation="prepare",
                 custody_state=ReceiptStatus.PREPARED, candidate=candidate,
@@ -1064,6 +1108,7 @@ class SimulatedCustodyAuthority:
             reason_code=reason_code)
         conn.execute("UPDATE transactions SET status=?,receipt_json=?,updated_at=? WHERE transaction_id=?",
             (ReceiptStatus.REJECTED.value, canonical(receipt.as_dict()).decode(), self._now(), tx["transaction_id"]))
+        conn.execute("DELETE FROM positions WHERE transaction_id=?", (tx["transaction_id"],))
         self._store_receipt(conn, receipt)
         self._append_event(conn, "COMMIT_REJECTED", tx["transaction_id"],
             {"reason_code": reason_code, "message": message, "receipt_id": receipt.receipt_id})
@@ -1107,13 +1152,14 @@ class SimulatedCustodyAuthority:
             if not evidence_ok:
                 return self._record_commit_rejection(conn, tx, evidence_reason, "persistence evidence failed binding or digest validation")
             accepted_at = self._now()
-            if accepted_at > float(tx["lease_expires_at"]):
+            if accepted_at >= float(tx["lease_expires_at"]):
                 expired = self._make_receipt(conn, transaction_id=transaction_id, operation="commit",
                     custody_state=ReceiptStatus.EXPIRED, candidate=CheckpointCandidate(**json.loads(tx["candidate_json"])),
                     reservation_id=reservation_id, lease_expires_at=tx["lease_expires_at"],
                     reason_code="LEASE_EXPIRED", issued_at=accepted_at)
                 conn.execute("UPDATE transactions SET status=?,receipt_json=?,updated_at=? WHERE transaction_id=?",
                     (ReceiptStatus.EXPIRED.value, canonical(expired.as_dict()).decode(), accepted_at, transaction_id))
+                conn.execute("DELETE FROM positions WHERE transaction_id=?", (transaction_id,))
                 self._store_receipt(conn, expired)
                 self._append_event(conn, "COMMIT_EXPIRED", transaction_id, {"receipt_id": expired.receipt_id})
                 conn.commit()
@@ -1246,7 +1292,7 @@ class SimulatedCustodyAuthority:
         finally:
             conn.close()
         if item.lease_expires_at is not None and item.custody_state in (ReceiptStatus.PREPARED.value, ReceiptStatus.RECOVERY_AUTHORIZED.value):
-            if self._now() > item.lease_expires_at:
+            if self._now() >= item.lease_expires_at:
                 return VerificationResult(VerificationOutcome.EXPIRED, False, CUSTODY_MODE, "receipt reservation lease expired")
         if expected_operation is not None and item.operation != expected_operation:
             return VerificationResult(VerificationOutcome.WRONG_SCOPE, False, CUSTODY_MODE, "operation mismatch")
