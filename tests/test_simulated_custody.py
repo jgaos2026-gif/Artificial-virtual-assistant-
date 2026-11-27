@@ -572,3 +572,77 @@ def test_authority_revocation_flag_cannot_be_cleared_without_journal_transition(
     with pytest.raises(CustodyIntegrityError, match="authority metadata"):
         auth.read_floor("stream-1")
 
+def test_expired_position_can_be_reacquired_by_same_candidate_new_transaction(tmp_path):
+    clock = Clock()
+    auth = make_authority(tmp_path, clock=clock, lease=5)
+    cand = candidate()
+    first = auth.prepare(cand, "expired-owner")
+    clock.advance(5)
+    second = auth.prepare(cand, "new-owner")
+    assert first.custody_state == ReceiptStatus.PREPARED.value
+    assert second.custody_state == ReceiptStatus.PREPARED.value
+    assert auth.query_transaction("expired-owner").status == ReceiptStatus.EXPIRED.value
+    assert auth.query_transaction("new-owner").status == ReceiptStatus.PREPARED.value
+    assert auth.journal_history("expired-owner")[-1]["event_type"] == "RESERVATION_EXPIRED"
+    assert auth.journal_history("new-owner")[-1]["event_type"] == "PREPARED"
+
+
+def test_expired_position_can_be_reacquired_with_a_different_candidate_digest(tmp_path):
+    clock = Clock()
+    auth = make_authority(tmp_path, clock=clock, lease=5)
+    first_candidate = candidate(b"first-payload")
+    first = auth.prepare(first_candidate, "expired-digest-owner")
+    clock.advance(5)
+    replacement_candidate = candidate(b"replacement-payload")
+    replacement = auth.prepare(replacement_candidate, "replacement-owner")
+    assert first.custody_state == ReceiptStatus.PREPARED.value
+    assert replacement.custody_state == ReceiptStatus.PREPARED.value
+    assert replacement.checkpoint_digest != first.checkpoint_digest
+    assert auth.query_transaction("expired-digest-owner").status == ReceiptStatus.EXPIRED.value
+    assert auth.query_transaction("replacement-owner").status == ReceiptStatus.PREPARED.value
+
+
+def test_two_writers_racing_to_reacquire_expired_position_have_one_owner(tmp_path):
+    clock = Clock()
+    auth = make_authority(tmp_path, clock=clock, lease=5)
+    auth.prepare(candidate(), "expired-owner")
+    clock.advance(5)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(
+            lambda txid: auth.prepare(candidate(), txid),
+            ("reacquire-a", "reacquire-b"),
+        ))
+    assert sorted(item.custody_state for item in results) == [
+        ReceiptStatus.PREPARED.value, ReceiptStatus.REJECTED.value,
+    ]
+    assert auth.query_transaction("expired-owner").status == ReceiptStatus.EXPIRED.value
+    active = [txid for txid in ("reacquire-a", "reacquire-b")
+              if auth.query_transaction(txid).status == ReceiptStatus.PREPARED.value]
+    assert len(active) == 1
+
+
+def test_commit_at_exact_lease_expiry_is_rejected(tmp_path):
+    clock = Clock()
+    auth = make_authority(tmp_path, clock=clock, lease=5)
+    cand = candidate()
+    prepared = auth.prepare(cand, "exact-expiry-commit")
+    clock.advance(5)
+    evidence = PersistenceEvidence(
+        "exact-expiry-commit", prepared.reservation_id,
+        cand.checkpoint_digest, b"checkpoint-0", "exact-expiry-evidence",
+    )
+    expired = auth.commit("exact-expiry-commit", prepared.reservation_id, evidence)
+    assert expired.custody_state == ReceiptStatus.EXPIRED.value
+    assert auth.query_transaction("exact-expiry-commit").status == ReceiptStatus.EXPIRED.value
+    assert auth.read_floor("stream-1").sequence_no is None
+
+
+def test_receipt_lease_is_expired_at_exact_boundary(tmp_path):
+    clock = Clock()
+    auth = make_authority(tmp_path, clock=clock, lease=5)
+    prepared = auth.prepare(candidate(), "exact-expiry-receipt")
+    clock.advance(5)
+    result = auth.verify_receipt(prepared, expected_status=ReceiptStatus.PREPARED)
+    assert result.outcome == VerificationOutcome.EXPIRED
+    assert not result.valid
+
