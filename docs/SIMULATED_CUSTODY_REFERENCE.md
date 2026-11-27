@@ -36,6 +36,23 @@ A position row represents an active PREPARED reservation or a committed position
 
 `verify_floor_attestation()` verifies three distinct properties: the attestation signature is cryptographically valid; its key is the authority's active signer for the current epoch; and its stream, lineage, generation, sequence, checkpoint digest, previous digest, receipt ID, and revoked-key view match the current state reconstructed from the authenticated journal. A historically authentic floor attestation becomes stale as soon as that stream advances and must not be accepted as the current floor.
 
+`verify_receipt()` runs all database-backed checks inside one explicit SQLite read transaction. Journal reconstruction, receipt issuance lookup, active/revoked signer and epoch state, recovery authorization consumption and source-floor checks, lease/lifecycle checks, reservation ownership, and current-floor comparison therefore use one consistent database snapshot. In this DELETE-journal simulator, a concurrent writer cannot commit a key/authority or floor transition until that read transaction finishes. This is snapshot consistency within the local SQLite failure domain, not independent custody or protection from a compromised process/database.
+
+Verification outcome precedence is deterministic:
+1. Receipt schema, authority, simulator algorithm, and signature validation.
+2. Authenticated journal/state reconstruction and exact receipt issuance lookup.
+3. Revoked signing key, inactive signing key, then stale authority epoch.
+4. Missing issuance record.
+5. For recovery authorization receipts: missing authorization record, consumed authorization, then stale source floor.
+6. For PREPARED receipts: exact live reservation; otherwise COMMITTED/REJECTED transaction completion yields `RESERVATION_NOT_ACTIVE`; a still-PREPARED reservation at or beyond its lease boundary yields `EXPIRED`; remaining lifecycle mismatches yield `WRONG_STATUS` when a status was requested.
+7. For recovery authorization leases: `EXPIRED` at `now >= lease_expires_at`.
+8. Caller-requested operation/scope/status checks, followed by `require_current` contract validation.
+9. Committed checkpoint current-floor comparison, producing `AUTHENTIC_CURRENT`, `AUTHENTIC_HISTORICAL`, or `STALE_FLOOR` when currentness is required.
+
+The first matching outcome is the summary outcome; it does not erase other facts. Consumers must inspect the separate `authenticated`, `issued`, `signer_authorized`, `lifecycle_status`, `reservation_active`, and `admission_ready` fields rather than treating the outcome as a complete multidimensional state vector. `admission_ready` remains false for every result.
+
+A PREPARED receipt whose transaction committed before its lease expired remains authentic historical evidence after the original lease later expires. It returns `RESERVATION_NOT_ACTIVE` both with and without `expected_status=PREPARED`, because transaction completion is the reason the reservation ceased to be active; subsequent clock advancement does not retroactively turn a completed reservation into an expired transaction. If the transaction itself reaches EXPIRED while still PREPARED, verification returns `EXPIRED`. After an expired position is reacquired by another transaction, the old receipt never reports `reservation_active=true`; the new owner is checked independently, including after process restart.
+
 `verify_receipt()` separates:
 - `authenticated`: the supplied receipt's signature is cryptographically valid;
 - `issued`: the exact receipt is present in the custody receipt history and is linked by the verified journal;
@@ -109,4 +126,4 @@ Two coordinated-tampering tiers are separate:
 1. SQLite-only edits alter journal payload, receipt metadata, transaction row, and floor row without HMAC keys. Journal authentication must fail closed.
 2. The key-holder demonstration uses the process-held simulator HMAC key to rewrite and re-authenticate a local journal event. It demonstrates the simulator's shared trust boundary, not resistance to a key-compromised attacker.
 
-Owner/quorum authorization-proof verification and independently administered custody failure/key domains remain production blockers and are not implemented by SIMULATED_CUSTODY.
+Owner/quorum authorization-proof verification and independently administered custody failure/key domains remain production blockers and are not implemented by SIMULATED_CUSTODY. The single SQLite read snapshot only prevents one verification result from mixing database states within this local process/database view. It does not change the single-node SQLite and process-held HMAC trust boundary, authenticate owner/quorum proofs, or configure an external custody service.
