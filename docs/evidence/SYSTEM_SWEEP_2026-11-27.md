@@ -42,6 +42,13 @@ GitHub Actions workflow: `tests`, job: `unit-tests`, Python 3.12.
    - Result: success; pytest log reported **49 passed in 0.68s**.
    - This revision separates unsigned `AnchorProposal` requests from authority-issued signed `AnchorSnapshot` receipts, preventing callers from supplying/reusing a stale signature as the next checkpoint's signature.
 
+
+4. Authenticated Brick pin receipt refinement:
+   - Run: https://github.com/jgaos2026-gif/Artificial-virtual-assistant-/actions/runs/46045850902
+   - Commit: `f0d36e6d1c9fac75c691a4abdc8e784af7a97178`
+   - Result: success; pytest log reported **49 passed in 0.44s**.
+   - Wake now requires a signed/authenticated `BrickPinReceipt` bound to the exact immutable Brick ID/version/manifest digest, registry generation, verifier identity, and revocation state. Boolean-only Brick callbacks were removed from the wake contract.
+
 These results prove the repository's current reference test suite passed on the recorded commit. They do not prove independent production anti-rollback protection, hardware behavior, cross-host failure-domain separation, or integrated OASIS qualification.
 
 ## Anchor and wake test coverage
