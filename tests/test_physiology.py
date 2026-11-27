@@ -113,3 +113,15 @@ def test_dream_results_are_bounded_and_marked_simulated():
 def test_wake_verification_failure_enters_recovery_sleep():
     assert transition_sleep(SleepMode.DEEP_SLEEP, SleepMode.AWAKE, integrity_ok=False) is SleepMode.RECOVERY_SLEEP
     assert transition_sleep(SleepMode.DEEP_SLEEP, SleepMode.AWAKE, integrity_ok=True) is SleepMode.AWAKE
+
+
+def test_cold_records_are_retrievable_after_reopening_without_unbounded_index(tmp_path):
+    path = tmp_path / "cold.bin"
+    first = MemoryBraid(path, hot_limit=1, warm_limit=1)
+    one = first.commit_observation(source_id="s", content="older record", assurance=assurance(), observed_at=1)
+    first.commit_observation(source_id="s", content="newer record", assurance=assurance(), observed_at=2)
+    reopened = MemoryBraid(path, hot_limit=1, warm_limit=1)
+    restored = reopened.record(one.record_id)
+    assert restored == one
+    assert len(reopened.hot) <= 1
+    assert len(reopened.warm) <= 1
