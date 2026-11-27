@@ -1439,3 +1439,179 @@ def test_read_floor_uses_one_snapshot_during_signing_key_rotation(tmp_path, monk
     assert attestations[0].checkpoint_digest == committed.checkpoint_digest
     assert auth.verify_floor_attestation(attestations[0]) is False
     assert writer_done.is_set()
+
+
+@pytest.mark.parametrize("terminal_state", ["REJECTED", "EXPIRED"])
+def test_terminal_receipt_lifecycle_matrix_never_becomes_admission_authority(tmp_path, terminal_state):
+    clock = Clock()
+    auth = make_authority(tmp_path, clock=clock, lease=5)
+    prepared = auth.prepare(candidate(), f"terminal-{terminal_state.lower()}")
+    if terminal_state == "REJECTED":
+        terminal = auth.commit(
+            prepared.transaction_id, prepared.reservation_id,
+            PersistenceEvidence(
+                prepared.transaction_id, prepared.reservation_id,
+                prepared.checkpoint_digest, b"wrong-payload", "bad-evidence",
+            ),
+        )
+    else:
+        clock.advance(5)
+        terminal = auth.commit(
+            prepared.transaction_id, prepared.reservation_id,
+            PersistenceEvidence(
+                prepared.transaction_id, prepared.reservation_id,
+                prepared.checkpoint_digest, b"checkpoint-0", "expired-evidence",
+            ),
+        )
+    assert terminal.custody_state == terminal_state
+
+    correct = auth.verify_receipt(terminal, expected_status=terminal_state)
+    implicit = auth.verify_receipt(terminal)
+    wrong = auth.verify_receipt(
+        terminal,
+        expected_status="COMMITTED" if terminal_state != "COMMITTED" else "REJECTED",
+    )
+    current = auth.verify_receipt(terminal, require_current=True)
+
+    for result in (correct, implicit, wrong, current):
+        assert result.admission_ready is False
+        assert result.reservation_active is False
+    assert correct.authenticated and correct.issued
+    assert correct.lifecycle_status == terminal_state
+    assert correct.valid is True
+    assert implicit.authenticated and implicit.issued and implicit.valid is True
+    assert wrong.valid is False
+    assert current.valid is False
+
+
+def test_recovery_authorization_racing_key_rotation_has_one_serialized_outcome(tmp_path):
+    import threading
+
+    auth = make_authority(tmp_path)
+    prepare_commit(auth, tx="race-recovery-base")
+    start = threading.Barrier(3)
+    outcomes = {}
+    errors = {}
+
+    def authorize():
+        start.wait()
+        try:
+            outcomes["recovery"] = auth.authorize_recovery(
+                stream_id="stream-1", previous_lineage_id="lineage-0",
+                target_lineage_id="lineage-1", lineage_parent_id="lineage-0",
+                previous_generation=0, target_generation=1,
+                authorization_proof="simulated-owner-proof",
+                transaction_id="race-recovery",
+            )
+        except Exception as exc:
+            errors["recovery"] = exc
+
+    def rotate():
+        start.wait()
+        try:
+            outcomes["rotation"] = auth.revoke_authority(
+                new_authority_epoch=1, reason="concurrent key rotation",
+                authorization_proof="simulated-owner-proof",
+                target_key_id="key-a", next_active_key_id="key-b",
+                transaction_id="race-rotation",
+            )
+        except Exception as exc:
+            errors["rotation"] = exc
+
+    threads = [
+        threading.Thread(target=authorize, name="recovery-authorizer"),
+        threading.Thread(target=rotate, name="key-rotator"),
+    ]
+    for thread in threads:
+        thread.start()
+    start.wait()
+    for thread in threads:
+        thread.join(10)
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == {}
+    assert set(outcomes) == {"recovery", "rotation"}
+
+    history = auth.journal_history()
+    event_types = [event["event_type"] for event in history]
+    recovery_index = event_types.index("RECOVERY_AUTHORIZED")
+    rotation_index = event_types.index("AUTHORITY_KEY_REVOKED")
+    recovery = outcomes["recovery"]
+    if recovery_index < rotation_index:
+        # Recovery was authorized under key-a/epoch 0, then made stale by rotation.
+        result = auth.verify_receipt(recovery)
+        assert result.outcome == VerificationOutcome.REVOKED_KEY
+        assert result.admission_ready is False
+    else:
+        # Rotation won first; recovery was issued under key-b/epoch 1.
+        assert recovery.key_id == "key-b"
+        assert recovery.authority_epoch == 1
+        result = auth.verify_receipt(recovery)
+        assert result.valid is True
+        assert result.signer_authorized is True
+        assert result.admission_ready is False
+    assert auth.query_transaction("race-recovery") is None
+
+
+@pytest.mark.parametrize("operation", ["authorize_recovery", "revoke_authority"])
+def test_write_lock_timeout_fails_without_receipt_or_partial_journal(tmp_path, monkeypatch, operation):
+    import sqlite3
+
+    auth = make_authority(tmp_path)
+    prepare_commit(auth, tx=f"lock-base-{operation}")
+    before = auth.journal_history()
+    lock = sqlite3.connect(str(auth.path), timeout=1.0, isolation_level=None)
+    lock.execute("BEGIN IMMEDIATE")
+    original_connect = auth._connect
+
+    def short_timeout_connection():
+        conn = original_connect()
+        conn.execute("PRAGMA busy_timeout=25")
+        return conn
+
+    monkeypatch.setattr(auth, "_connect", short_timeout_connection)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            if operation == "authorize_recovery":
+                auth.authorize_recovery(
+                    stream_id="stream-1", previous_lineage_id="lineage-0",
+                    target_lineage_id="lineage-1", lineage_parent_id="lineage-0",
+                    previous_generation=0, target_generation=1,
+                    authorization_proof="simulated-owner-proof",
+                    transaction_id="lock-timeout-recovery",
+                )
+            else:
+                auth.revoke_authority(
+                    new_authority_epoch=1, reason="lock timeout",
+                    authorization_proof="simulated-owner-proof",
+                    target_key_id="key-a", next_active_key_id="key-b",
+                    transaction_id="lock-timeout-revocation",
+                )
+    finally:
+        lock.rollback()
+        lock.close()
+
+    assert auth.journal_history() == before
+    assert auth.query_transaction(f"lock-timeout-{ 'recovery' if operation == 'authorize_recovery' else 'revocation' }") is None
+
+
+def test_truncated_receipt_history_fails_closed_after_restart(tmp_path):
+    import sqlite3
+
+    auth = make_authority(tmp_path)
+    _, committed = prepare_commit(auth, tx="truncated-receipt")
+    conn = sqlite3.connect(str(auth.path))
+    conn.execute(
+        "UPDATE receipts SET receipt_json=? WHERE receipt_id=?",
+        ("{truncated", committed.receipt_id),
+    )
+    conn.commit()
+    conn.close()
+
+    reopened = SimulatedCustodyAuthority(
+        tmp_path / "custody.sqlite3", authority_id="test-custody",
+        keys=KEYS, active_key_id="key-a", clock=Clock(), lease_seconds=10,
+    )
+    with pytest.raises(CustodyIntegrityError):
+        reopened.verify_receipt(committed)
+    with pytest.raises(CustodyIntegrityError):
+        reopened.query_transaction("truncated-receipt")
