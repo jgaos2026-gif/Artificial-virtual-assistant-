@@ -64,6 +64,15 @@ class BrickPin:
     manifest_digest: str
 
 
+@dataclass(frozen=True)
+class BrickPinReceipt:
+    pin: BrickPin
+    revoked: bool
+    registry_generation: int
+    verifier_id: str
+    signature_hex: str
+
+
 class AnchorAuthority(Protocol):
     """Must be backed by a trust/failure domain outside the COLD archive."""
     def read(self, stream_id: str) -> AnchorSnapshot | None: ...
@@ -79,8 +88,8 @@ class SpineReceiptVerifier(Protocol):
 
 
 class BrickTrustVerifier(Protocol):
-    def verify_exact_pin(self, pin: BrickPin) -> bool: ...
-    def is_revoked(self, pin: BrickPin) -> bool: ...
+    def get_pin_receipt(self, pin: BrickPin) -> BrickPinReceipt: ...
+    def verify_pin_receipt(self, receipt: BrickPinReceipt) -> bool: ...
 
 
 @contextmanager
@@ -416,8 +425,24 @@ class CompositeWakeVerifier:
                 if (
                     not pin.brick_id or not pin.version
                     or not _SHA_RE.fullmatch(pin.manifest_digest)
-                    or self._brick_verifier.is_revoked(pin)
-                    or not self._brick_verifier.verify_exact_pin(pin)
+                ):
+                    raise AnchorError("required Brick pin is malformed")
+                brick_receipt = self._brick_verifier.get_pin_receipt(pin)
+                if (
+                    not isinstance(brick_receipt, BrickPinReceipt)
+                    or brick_receipt.pin != pin
+                    or type(brick_receipt.revoked) is not bool
+                    or type(brick_receipt.registry_generation) is not int
+                    or brick_receipt.registry_generation < 0
+                    or not isinstance(brick_receipt.verifier_id, str)
+                    or not brick_receipt.verifier_id
+                    or not isinstance(brick_receipt.signature_hex, str)
+                    or len(brick_receipt.signature_hex) == 0
+                    or len(brick_receipt.signature_hex) > MAX_SIGNATURE_HEX
+                    or len(brick_receipt.signature_hex) % 2
+                    or not re.fullmatch(r"[0-9a-fA-F]+", brick_receipt.signature_hex)
+                    or brick_receipt.revoked
+                    or not self._brick_verifier.verify_pin_receipt(brick_receipt)
                 ):
                     raise AnchorError("required Brick version/digest is revoked or unverified")
             return True
