@@ -1,8 +1,8 @@
 """Same-host advisory file lock shared by COLD readers and writers.
 
-All cooperating processes MUST derive the lock path with lock_path_for().
-The lock file is persistent and must never be unlinked while processes may use it.
-This is not a distributed lock and cannot stop writers that bypass the protocol.
+All cooperating processes derive identity with lock_path_for(). Never unlink or
+replace the lock file while users may hold it. This is not a distributed lock
+and cannot stop a writer that bypasses the protocol.
 """
 from __future__ import annotations
 
@@ -33,38 +33,37 @@ class CrossProcessAdvisoryLock:
     @contextmanager
     def exclusive(self) -> Iterator[None]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        flags = os.O_CREAT | os.O_RDWR
-        if hasattr(os, "O_CLOEXEC"):
-            flags |= os.O_CLOEXEC
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
         fd = os.open(self.path, flags, 0o600)
         acquired = False
         try:
-            if os.name == "nt":
-                import msvcrt
-                # Ensure byte zero exists; msvcrt.locking locks a byte range.
-                if os.fstat(fd).st_size == 0:
-                    os.write(fd, b"\\0")
-                    os.fsync(fd)
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(fd, fcntl.LOCK_EX)
-            acquired = True
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    if os.fstat(fd).st_size == 0:
+                        os.write(fd, b"\\0")
+                        os.fsync(fd)
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                acquired = True
+            except OSError as exc:
+                raise CrossProcessLockError(f"lock acquisition failed for {self.path}: {exc}") from exc
             yield
-        except OSError as exc:
-            raise CrossProcessLockError(f"lock operation failed for {self.path}: {exc}") from exc
         finally:
-            if acquired:
-                try:
-                    if os.name == "nt":
-                        import msvcrt
-                        os.lseek(fd, 0, os.SEEK_SET)
-                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-                    else:
-                        import fcntl
-                        fcntl.flock(fd, fcntl.LOCK_UN)
-                except OSError as exc:
-                    os.close(fd)
-                    raise CrossProcessLockError(f"lock release failed for {self.path}: {exc}") from exc
-            os.close(fd)
+            try:
+                if acquired:
+                    try:
+                        if os.name == "nt":
+                            import msvcrt
+                            os.lseek(fd, 0, os.SEEK_SET)
+                            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                        else:
+                            import fcntl
+                            fcntl.flock(fd, fcntl.LOCK_UN)
+                    except OSError as exc:
+                        raise CrossProcessLockError(f"lock release failed for {self.path}: {exc}") from exc
+            finally:
+                os.close(fd)
