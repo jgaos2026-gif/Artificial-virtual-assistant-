@@ -29,7 +29,9 @@ previous unmerged implementation.
   a cutoff/truncation occurs.
 - Exactly `max_records` lines followed by EOF is not truncation.
 - Missing synchronization guard means `consistent_read_guaranteed=false`;
-  anchored classification is denied.
+  anchored classification is denied. A supplied guard is only as strong as its
+  writer contract: every writer must honor the same exclusive guard. This
+  reference adapter does not prove hostile or privileged writers comply.
 
 ## Checkpoint binding
 
@@ -37,7 +39,9 @@ A checkpoint verifier must implement `verify_checkpoint(checkpoint, snapshot)`.
 The checkpoint object is explicit, typed, and includes record count and head hash.
 After authenticating it, the classifier independently recomputes the COLD chain
 prefix at `checkpoint_record_count` and compares its head. The same is done for
-the baseline boundary. A verifier returning true cannot bypass this chain check.
+the baseline boundary. A verifier returning true cannot bypass this chain check. The checkpoint must
+also match the current authenticated snapshot's exact count and head; a valid
+older prefix is not accepted as the current checkpoint.
 
 ## Anti-rollback limit
 

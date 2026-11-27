@@ -108,8 +108,9 @@ class BaselineStore:
             identity=(old.stream_id,old.authority_id,old.lineage_id)
             new_identity=(baseline.stream_id,baseline.authority_id,baseline.lineage_id)
             if identity != new_identity: raise ValueError("baseline identity replacement requires explicit migration")
-            if (baseline.baseline_generation,baseline.baseline_record_count) < (old.baseline_generation,old.baseline_record_count):
-                raise ValueError("baseline rollback refused")
+            if (baseline.baseline_generation < old.baseline_generation or
+                    baseline.baseline_record_count < old.baseline_record_count):
+                raise ValueError("baseline rollback refused: generation and record count must not decrease independently")
         import os, tempfile
         parent=os.path.dirname(os.path.abspath(self.path))
         os.makedirs(parent,exist_ok=True)
@@ -206,7 +207,8 @@ class ColdHistoryProvenanceClassifier:
         checkpoint_bound=(checkpoint_count in prefix_heads and prefix_heads[checkpoint_count]==checkpoint.checkpoint_head_hash)
         snapshot_bound=(snapshot_count in prefix_heads and prefix_heads[snapshot_count]==snapshot.head_hash
                         and snapshot.generation==snapshot.record_count
-                        and checkpoint_count<=snapshot_count)
+                        and checkpoint_count==snapshot_count
+                        and checkpoint.checkpoint_head_hash==snapshot.head_hash)
         authority=bool(authority and boundary_bound and checkpoint_bound and snapshot_bound)
         if not authority:
             results=[RecordResult(x.index, ProvenanceStatus.UNANCHORED if x.status==ProvenanceStatus.ANCHORED else x.status,

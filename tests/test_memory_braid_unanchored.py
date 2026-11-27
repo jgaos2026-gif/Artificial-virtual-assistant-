@@ -88,3 +88,22 @@ def test_snapshot_head_must_match_inspected_chain(tmp_path):
     report=classifier.classify(records,wrong,baseline,cp,consistent_read_guaranteed=True)
     assert report.authority_verified is False
     assert report.anchoring_eligible is False
+
+def test_baseline_store_rejects_independent_record_count_rollback(tmp_path):
+    store=BaselineStore(str(tmp_path/"baseline.json"))
+    store.save(AnchorBaseline("s","a","lineage",0,1,10,"0"*64,"proof"))
+    import pytest
+    with pytest.raises(ValueError,match="record count"):
+        store.save(AnchorBaseline("s","a","lineage",0,2,9,"1"*64,"proof"))
+
+def test_checkpoint_must_match_current_snapshot_not_just_valid_prefix(tmp_path):
+    records,snap,baseline,cp,_=setup_auth(tmp_path)
+    class AlwaysTrueVerifier:
+        def verify_checkpoint(self, checkpoint, snapshot): return True
+    classifier=ColdHistoryProvenanceClassifier(expected_lineage_id="lineage",
+        snapshot_verifier=lambda s:True,baseline_verifier=HmacBaselineVerifier(KEY,"lineage"),
+        checkpoint_verifier=AlwaysTrueVerifier())
+    stale=MonotonicCheckpoint("s","a","lineage",1,1,1,records[0]["entry_hash"],"authenticated-old")
+    report=classifier.classify(records,snap,baseline,stale,consistent_read_guaranteed=True)
+    assert report.authority_verified is False
+    assert report.anchoring_eligible is False
