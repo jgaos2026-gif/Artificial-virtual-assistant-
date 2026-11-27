@@ -32,7 +32,7 @@ Provide bounded HOT/WARM/COLD memory staging, append-only COLD event framing, no
 
 ## Deliberate limitations
 
-- The current reference keeps a process-local record index and bounded caches. It does not rebuild that index from COLD on startup.
+- The current reference scans and verifies COLD records on demand, so it does not retain an unbounded full-record index in RAM. This is intentionally simple and may be slow for large archives; a bounded, verified on-disk index is future work.
 - It does not implement authenticated identities, signatures, independent SB712 witnesses, policy service integration, OS-level resource isolation, encrypted storage, or multi-process locking.
 - `certification_id` is a required reference string, not a cryptographic certificate or proof of actual certification.
 - Sleep states are lifecycle primitives, not an autonomous scheduler.
