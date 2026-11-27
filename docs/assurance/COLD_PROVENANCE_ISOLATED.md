@@ -65,8 +65,9 @@ DoD/Navy approval.
 ## Shared cross-process lock
 
 The isolated reference writer and reader now derive one advisory lock identity
-from the canonical resolved COLD resource path using
-`shared_cross_process_lock.lock_path_for()`. The lock file is persistent and
+using the exact `Path(target).with_name(Path(target).name + ".writer.lock")`
+convention already used by the unchanged `AnchoredColdLog` in `anchor.py`.
+The new adapter uses the same file path and OS advisory locking family. The lock file is persistent and
 must not be unlinked while a process may hold it. Cooperating processes on the
 same host serialize reads and writes by entering the same exclusive lock.
 
