@@ -1480,7 +1480,11 @@ class SimulatedCustodyAuthority:
             if item.custody_state != status:
                 return authenticated_result(VerificationOutcome.WRONG_STATUS, False, "receipt is authentic and issued but lifecycle status does not match the requested status", issued=True, signer_authorized=True)
         # require_current applies only to committed checkpoint receipts.
-        if require_current and item.custody_state != ReceiptStatus.COMMITTED.value:
+        if require_current and not (
+            item.custody_state == ReceiptStatus.COMMITTED.value
+            and item.operation == "commit"
+            and item.stream_id is not None
+        ):
             return authenticated_result(
                 VerificationOutcome.WRONG_STATUS, False,
                 "require_current applies only to committed checkpoint receipts",
