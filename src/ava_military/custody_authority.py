@@ -187,6 +187,9 @@ class VerificationResult:
     valid: bool
     custody_mode: str
     reason: str
+    authenticated: bool = False
+    lifecycle_status: str | None = None
+    admission_ready: bool = False
 
 
 @dataclass(frozen=True)
@@ -1279,32 +1282,40 @@ class SimulatedCustodyAuthority:
             return VerificationResult(VerificationOutcome.INVALID_CANONICALIZATION, False, CUSTODY_MODE, "simulator environment/algorithm mismatch")
         if not self._verify_signature_only(item):
             return VerificationResult(VerificationOutcome.INVALID_SIGNATURE, False, CUSTODY_MODE, "receipt signature invalid")
+
+        def authenticated_result(outcome: VerificationOutcome, valid: bool, reason: str) -> VerificationResult:
+            return VerificationResult(
+                outcome, valid, CUSTODY_MODE, reason,
+                authenticated=True, lifecycle_status=item.custody_state,
+                admission_ready=False,
+            )
+
         conn = self._connect()
         try:
             self._verify_state(conn)
             if conn.execute("SELECT 1 FROM revocations WHERE key_id=?", (item.key_id,)).fetchone():
-                return VerificationResult(VerificationOutcome.REVOKED_KEY, False, CUSTODY_MODE, "receipt signing key is revoked")
+                return authenticated_result(VerificationOutcome.REVOKED_KEY, False, "receipt signature is authentic but its signing key is revoked")
             epoch = int(self._meta_get(conn, "authority_epoch"))
             if item.authority_epoch != epoch:
-                return VerificationResult(VerificationOutcome.STALE_EPOCH, False, CUSTODY_MODE, "receipt authority epoch is not current")
+                return authenticated_result(VerificationOutcome.STALE_EPOCH, False, "receipt signature is authentic but its authority epoch is stale")
         except CustodyError:
             raise
         finally:
             conn.close()
         if item.lease_expires_at is not None and item.custody_state in (ReceiptStatus.PREPARED.value, ReceiptStatus.RECOVERY_AUTHORIZED.value):
             if self._now() >= item.lease_expires_at:
-                return VerificationResult(VerificationOutcome.EXPIRED, False, CUSTODY_MODE, "receipt reservation lease expired")
+                return authenticated_result(VerificationOutcome.EXPIRED, False, "receipt is authentic but its reservation lease expired")
         if expected_operation is not None and item.operation != expected_operation:
-            return VerificationResult(VerificationOutcome.WRONG_SCOPE, False, CUSTODY_MODE, "operation mismatch")
+            return authenticated_result(VerificationOutcome.WRONG_SCOPE, False, "receipt is authentic but operation scope does not match")
         if expected_scope:
             for field, expected in expected_scope.items():
                 if getattr(item, field, object()) != expected:
-                    return VerificationResult(VerificationOutcome.WRONG_SCOPE, False, CUSTODY_MODE, f"{field} mismatch")
+                    return authenticated_result(VerificationOutcome.WRONG_SCOPE, False, f"receipt is authentic but {field} scope does not match")
         if expected_status is not None:
             status = expected_status.value if isinstance(expected_status, ReceiptStatus) else str(expected_status)
             if item.custody_state != status:
-                return VerificationResult(VerificationOutcome.WRONG_STATUS, False, CUSTODY_MODE, "receipt lifecycle status mismatch")
-        return VerificationResult(VerificationOutcome.VALID, True, CUSTODY_MODE, "signature, authority, epoch, and requested scope verified")
+                return authenticated_result(VerificationOutcome.WRONG_STATUS, False, "receipt is authentic but lifecycle status does not match the requested status")
+        return authenticated_result(VerificationOutcome.VALID, True, f"receipt is authentic; lifecycle={item.custody_state}; admission_ready=false")
 
     def authorize_recovery(
         self, *, stream_id: str, previous_lineage_id: str, target_lineage_id: str,
