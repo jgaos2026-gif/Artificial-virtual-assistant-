@@ -806,7 +806,7 @@ class SimulatedCustodyAuthority:
                 "previous_checkpoint_digest", "receipt_id", "transaction_id", "authority_epoch",
             ):
                 if floor[field] != latest[field]:
-                    raise CustodyIntegrityError("custody floor regresses or disagrees with latest committed journal state")
+                    raise CustodyIntegrityError("custody floor disagrees with latest committed journal state or regresses")
 
         authorization_rows = conn.execute("SELECT * FROM recovery_authorizations").fetchall()
         if {row["recovery_authorization_id"] for row in authorization_rows} != set(recovery_events):
