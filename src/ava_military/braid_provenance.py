@@ -141,7 +141,7 @@ class HmacBaselineVerifier:
                 hmac.compare_digest(b.baseline_proof,self.sign(b)))
 
 class HmacMonotonicCheckpointVerifier:
-    """Authenticates checkpoint contents, but is NOT a non-rollbackable store."""
+    """Authenticates checkpoint contents, but does NOT enforce freshness or non-rollbackable storage."""
     def __init__(self,key: bytes):
         if len(key)<32: raise ValueError("key must be at least 32 bytes")
         self.key=key
@@ -201,9 +201,13 @@ class ColdHistoryProvenanceClassifier:
             results.append(RecordResult(len(material),ProvenanceStatus.NOT_INSPECTED,"input inspection incomplete"))
         boundary_count=baseline.baseline_record_count
         checkpoint_count=checkpoint.checkpoint_record_count
+        snapshot_count=snapshot.record_count
         boundary_bound=(boundary_count in prefix_heads and prefix_heads[boundary_count]==baseline.baseline_head_hash)
         checkpoint_bound=(checkpoint_count in prefix_heads and prefix_heads[checkpoint_count]==checkpoint.checkpoint_head_hash)
-        authority=bool(authority and boundary_bound and checkpoint_bound)
+        snapshot_bound=(snapshot_count in prefix_heads and prefix_heads[snapshot_count]==snapshot.head_hash
+                        and snapshot.generation==snapshot.record_count
+                        and checkpoint_count<=snapshot_count)
+        authority=bool(authority and boundary_bound and checkpoint_bound and snapshot_bound)
         if not authority:
             results=[RecordResult(x.index, ProvenanceStatus.UNANCHORED if x.status==ProvenanceStatus.ANCHORED else x.status,
                                   "authenticated boundary does not bind to inspected COLD chain" if x.status==ProvenanceStatus.ANCHORED else x.reason)

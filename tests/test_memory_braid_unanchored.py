@@ -67,3 +67,24 @@ def test_omitted_count_is_lower_bound_and_never_exact(tmp_path):
     p=tmp_path/"cold.jsonl"; p.write_bytes(b'{"a":1}\n{"b":2}\n{"c":3}\n')
     records,complete,omitted,_=_read_jsonl(p,max_records=1,max_line_bytes=20)
     assert len(records)==1 and not complete and omitted>=1
+
+def test_custom_checkpoint_verifier_cannot_bypass_chain_head_binding(tmp_path):
+    records,snap,baseline,cp,_=setup_auth(tmp_path)
+    class AlwaysTrueVerifier:
+        def verify_checkpoint(self, checkpoint, snapshot):
+            return True
+    classifier=ColdHistoryProvenanceClassifier(expected_lineage_id="lineage",
+        snapshot_verifier=lambda s:True,baseline_verifier=HmacBaselineVerifier(KEY,"lineage"),
+        checkpoint_verifier=AlwaysTrueVerifier())
+    wrong=MonotonicCheckpoint(**{**cp.__dict__,"checkpoint_head_hash":"e"*64})
+    report=classifier.classify(records,snap,baseline,wrong,consistent_read_guaranteed=True)
+    assert report.authority_verified is False
+    assert report.anchoring_eligible is False
+
+def test_snapshot_head_must_match_inspected_chain(tmp_path):
+    records,snap,baseline,cp,classifier=setup_auth(tmp_path)
+    wrong=ColdSnapshot(snap.stream_id,snap.authority_id,snap.lineage_id,
+        snap.generation,snap.record_count,"d"*64,snap.signature)
+    report=classifier.classify(records,wrong,baseline,cp,consistent_read_guaranteed=True)
+    assert report.authority_verified is False
+    assert report.anchoring_eligible is False
