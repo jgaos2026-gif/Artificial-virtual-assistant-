@@ -78,7 +78,9 @@ def _read_jsonl(path, *, max_records=100000, max_line_bytes=1048576):
 
 def read_braided_stream(path, *, classifier: ColdHistoryProvenanceClassifier, snapshot: ColdSnapshot,
                         baseline: AnchorBaseline, checkpoint: MonotonicCheckpoint,
-                        max_records=100000,max_line_bytes=1048576, sync_guard=None):
+                        max_records=100000,max_line_bytes=1048576, sync_guard=None, cold_log=None):
+    if cold_log is not None:
+        sync_guard = getattr(cold_log, '_exclusive_guard', None)
     consistent=callable(sync_guard)
     if consistent:
         with sync_guard():

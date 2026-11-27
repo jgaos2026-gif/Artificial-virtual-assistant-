@@ -49,7 +49,9 @@ def test_checkpoint_must_bind_chain_and_missing_guard_denies_anchored(tmp_path,m
     class NoGuard:
         def __init__(self): self.path=p
         def append(self,record): pass
-    view=read_braided_stream(p,classifier=classifier,snapshot=snap,baseline=baseline,checkpoint=cp,sync_guard=None)
+    class MissingGuardLog:
+        pass  # Deliberately has no _exclusive_guard method.
+    view=read_braided_stream(p,classifier=classifier,snapshot=snap,baseline=baseline,checkpoint=cp,cold_log=MissingGuardLog())
     assert view.consistent_read_guaranteed is False
     assert sum(x.status==ProvenanceStatus.ANCHORED for x in view.report.results)==0
 
