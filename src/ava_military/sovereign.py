@@ -203,7 +203,7 @@ def affective_budget(valence: float, arousal: float) -> AffectiveBudget:
     if not math.isfinite(arousal) or not 0.0 <= arousal <= 1.0:
         raise ValueError("arousal must be finite and in [0, 1]")
     return AffectiveBudget(
-        attention_multiplier=0.8 + ((valence + 1.0) * 0.2),
+        attention_multiplier=round(0.8 + ((valence + 1.0) * 0.2), 3),
         retrieval_breadth=min(7, max(3, 3 + round(arousal * 4))),
         simulation_branches=min(3, max(1, 1 + round(arousal * 2))),
     )
