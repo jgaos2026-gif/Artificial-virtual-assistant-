@@ -165,12 +165,15 @@ def test_malformed_frame_schema_is_rejected(tmp_path):
         AnchoredColdLog(path, "memory-main", authority)
 
 
-def test_interrupted_append_leaves_stream_unusable_not_silently_repaired(tmp_path):
+def test_interrupted_append_leaves_stream_unusable_not_silently_repaired(tmp_path, monkeypatch):
     path, authority, log = make_log(tmp_path)
-    original = log.path.open
+    from pathlib import Path
+    original_open = Path.open
+
     class BrokenWriter:
+        def __init__(self, handle):
+            self.handle = handle
         def __enter__(self):
-            self.handle = original("ab")
             return self
         def __exit__(self, *args):
             self.handle.close()
@@ -181,14 +184,16 @@ def test_interrupted_append_leaves_stream_unusable_not_silently_repaired(tmp_pat
             self.handle.flush()
         def fileno(self):
             return self.handle.fileno()
-    def broken_open(mode="r", *args, **kwargs):
-        if mode == "ab":
-            return BrokenWriter()
-        return original(mode, *args, **kwargs)
-    log.path.open = broken_open
+
+    def broken_open(self, mode="r", *args, **kwargs):
+        if self == path and mode == "ab":
+            return BrokenWriter(original_open(self, "ab"))
+        return original_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", broken_open)
     with pytest.raises(AnchorError, match="incomplete"):
         log.append("interrupted", "MEMORY_COMMIT", {"text": "partial"})
-    log.path.open = original
+    monkeypatch.setattr(Path, "open", original_open)
     with pytest.raises(AnchorError):
         log.verify()
 
