@@ -2,20 +2,28 @@
 
 The canonical path deliberately matches anchor.py:
 Path(target).with_name(Path(target).name + ".writer.lock").
-Do not unlink or replace this lock file while processes may hold it.
-This is advisory same-host coordination, not distributed locking or mandatory
-access control against writers that bypass the protocol.
+
+The lock file is persistent and must not be unlinked while processes may hold
+it. The kernel releases an acquired advisory lock when its process exits, so
+an abandoned lock file is not itself a stale held lock. This is same-host
+coordination, not distributed locking or mandatory access control.
 """
 from __future__ import annotations
 
 from contextlib import contextmanager
+import errno
 import os
 from pathlib import Path
+import time
 from typing import Iterator
 
 
 class CrossProcessLockError(RuntimeError):
     """The OS-level advisory lock could not be acquired or released."""
+
+
+class CrossProcessLockTimeout(CrossProcessLockError):
+    """The OS-level advisory lock was not acquired before its deadline."""
 
 
 def lock_path_for(target_path: os.PathLike[str] | str) -> Path:
@@ -24,36 +32,83 @@ def lock_path_for(target_path: os.PathLike[str] | str) -> Path:
 
 
 class CrossProcessAdvisoryLock:
-    """Exclusive lock using the exact lock-file identity used by AnchoredColdLog."""
+    """Exclusive OS lock using AnchoredColdLog's exact persistent lock path.
 
-    def __init__(self, target_path: os.PathLike[str] | str) -> None:
+    A finite timeout is used by default so a wedged or unexpectedly long-held
+    lock fails closed instead of hanging a reader indefinitely. A process crash
+    releases the kernel lock; the persistent lock file must not be deleted as
+    a stale-lock cleanup operation because unlinking can split lock identity.
+    """
+
+    def __init__(
+        self,
+        target_path: os.PathLike[str] | str,
+        *,
+        timeout: float | None = 30.0,
+        poll_interval: float = 0.05,
+    ) -> None:
+        if timeout is not None and (not isinstance(timeout, (int, float)) or timeout < 0):
+            raise ValueError("timeout must be non-negative or None")
+        if not isinstance(poll_interval, (int, float)) or poll_interval <= 0:
+            raise ValueError("poll_interval must be positive")
         self.target_path = Path(target_path)
         self.path = lock_path_for(self.target_path)
+        self.timeout = None if timeout is None else float(timeout)
+        self.poll_interval = float(poll_interval)
 
     @contextmanager
     def exclusive(self) -> Iterator[None]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # Match AnchoredColdLog's a+b lock-file creation and byte-range semantics.
         handle = self.path.open("a+b")
         acquired = False
+        deadline = None if self.timeout is None else time.monotonic() + self.timeout
         try:
             try:
                 if os.name == "nt":
                     import msvcrt
+
                     handle.seek(0)
                     if handle.read(1) == b"":
                         handle.write(b"0")
                         handle.flush()
                         os.fsync(handle.fileno())
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                    while True:
+                        try:
+                            handle.seek(0)
+                            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                            acquired = True
+                            break
+                        except OSError as exc:
+                            if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK, None):
+                                raise
+                            if deadline is not None and time.monotonic() >= deadline:
+                                raise CrossProcessLockTimeout(
+                                    f"timed out acquiring lock {self.path}"
+                                ) from exc
+                            time.sleep(self.poll_interval)
                 else:
                     import fcntl
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                acquired = True
+
+                    while True:
+                        try:
+                            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            acquired = True
+                            break
+                        except OSError as exc:
+                            if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                                raise
+                            if deadline is not None and time.monotonic() >= deadline:
+                                raise CrossProcessLockTimeout(
+                                    f"timed out acquiring lock {self.path}"
+                                ) from exc
+                            time.sleep(self.poll_interval)
+                yield
+            except CrossProcessLockError:
+                raise
             except OSError as exc:
-                raise CrossProcessLockError(f"lock acquisition failed for {self.path}: {exc}") from exc
-            yield
+                raise CrossProcessLockError(
+                    f"lock acquisition failed for {self.path}: {exc}"
+                ) from exc
         finally:
             try:
                 if acquired:
@@ -66,6 +121,8 @@ class CrossProcessAdvisoryLock:
                             import fcntl
                             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                     except OSError as exc:
-                        raise CrossProcessLockError(f"lock release failed for {self.path}: {exc}") from exc
+                        raise CrossProcessLockError(
+                            f"lock release failed for {self.path}: {exc}"
+                        ) from exc
             finally:
                 handle.close()
