@@ -1,6 +1,6 @@
 # AVA for Military and Navy Research
 
-**Artificial Virtual Assistant (AVA)** is a JGA Enterprises research program for a locally sovereign, evidence-governed digital-organism architecture intended for evaluation in controlled military and Navy-adjacent environments.
+**Artificial Virtual Assistant (AVA)** is a JGA Enterprises research program developing a local-first, evidence-governed assistant architecture for controlled research and potential military/Navy-adjacent evaluation. “Digital Organism” is the project’s architecture term for the intended persistent identity, state, memory, and governed lifecycle; it is not a claim of biological life or subjective experience.
 
 AVA is not represented here as fielded, production-secure, accredited, or military-certified. This repository separates canonical design, prototype implementation, test evidence, and open research.
 
@@ -8,7 +8,7 @@ AVA is not represented here as fielded, production-secure, accredited, or milita
 
 Develop and rigorously evaluate a local-first assistant architecture that preserves identity and state lineage, operates under explicit authority boundaries, explains evidence behind consequential outputs, contains untrusted inputs, and recovers through verified checkpoints.
 
-## Core design
+## Target architecture (design intent)
 
 - **AVA:** persistent organism/operator identity and governed decision runtime.
 - **OASIS:** local runtime and operating environment.
