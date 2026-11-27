@@ -52,6 +52,8 @@ class VerificationOutcome(str, Enum):
     WRONG_STATUS = "WRONG_STATUS"
     UNKNOWN_AUTHORITY = "UNKNOWN_AUTHORITY"
     INVALID_CANONICALIZATION = "INVALID_CANONICALIZATION"
+    UNAUTHORIZED_KEY = "UNAUTHORIZED_KEY"
+    UNISSUED_RECEIPT = "UNISSUED_RECEIPT"
 
 
 class CustodyError(RuntimeError):
@@ -190,6 +192,8 @@ class VerificationResult:
     authenticated: bool = False
     lifecycle_status: str | None = None
     admission_ready: bool = False
+    issued: bool = False
+    signer_authorized: bool = False
 
 
 @dataclass(frozen=True)
@@ -555,6 +559,8 @@ class SimulatedCustodyAuthority:
         latest_tx_receipt: dict[str, CustodyReceipt] = {}
         tx_status: dict[str, str] = {}
         tx_prepared_payload: dict[str, dict[str, Any]] = {}
+        tx_lifecycle: dict[str, str] = {}
+        tx_state_receipt_id: dict[str, str] = {}
         latest_committed: dict[str, dict[str, Any]] = {}
         recovery_events: dict[str, tuple[sqlite3.Row, dict[str, Any], CustodyReceipt]] = {}
         consumed_recoveries: dict[str, str] = {}
@@ -603,25 +609,68 @@ class SimulatedCustodyAuthority:
                     raise CustodyIntegrityError("journal references a missing receipt-history record")
                 if receipt.transaction_id != txid:
                     raise CustodyIntegrityError("journal receipt transaction binding mismatch")
+                expected_receipt_epoch = epoch + 1 if event_type in ("AUTHORITY_KEY_REVOKED", "AUTHORITY_REVOKED") else epoch
+                if receipt.key_id != row["key_id"] or receipt.authority_epoch != expected_receipt_epoch:
+                    raise CustodyIntegrityError("journal receipt signer or authority epoch does not match its authenticated event")
                 expected_status = state_events.get(event_type)
                 if event_type == "COMMIT_REPLAY_REJECTED":
                     expected_status = ReceiptStatus.REJECTED.value
                 if expected_status is None or receipt.custody_state != expected_status:
                     raise CustodyIntegrityError("journal event lifecycle does not match signed receipt status")
                 referenced_receipts.add(receipt_id)
-                transaction_state_event = event_type in (
-                    "PREPARED", "COMMIT_REJECTED", "RESERVATION_EXPIRED",
-                    "COMMIT_EXPIRED", "COMMITTED",
-                )
-                if transaction_state_event and txid is not None:
-                    latest_tx_receipt[txid] = receipt
-                    tx_status[txid] = expected_status
-                if event_type == "PREPARED":
-                    tx_prepared_payload[txid] = payload
+                if event_type in ("PREPARED", "PREPARE_REJECTED", "COMMIT_REJECTED", "RESERVATION_EXPIRED", "COMMIT_EXPIRED", "COMMITTED", "COMMIT_REPLAY_REJECTED"):
+                    if not isinstance(txid, str) or not _ID.fullmatch(txid):
+                        raise CustodyIntegrityError("transaction lifecycle event has an invalid transaction ID")
+                    current_lifecycle = tx_lifecycle.get(txid)
+                    if event_type == "PREPARED":
+                        if current_lifecycle is not None:
+                            raise CustodyIntegrityError("transaction PREPARED event is duplicated or reopens a terminal lifecycle")
+                        tx_lifecycle[txid] = ReceiptStatus.PREPARED.value
+                        tx_prepared_payload[txid] = payload
+                        latest_tx_receipt[txid] = receipt
+                        tx_status[txid] = ReceiptStatus.PREPARED.value
+                        tx_state_receipt_id[txid] = receipt.receipt_id
+                    elif event_type == "PREPARE_REJECTED":
+                        if current_lifecycle is None:
+                            tx_lifecycle[txid] = ReceiptStatus.REJECTED.value
+                    elif event_type in ("COMMIT_REJECTED", "RESERVATION_EXPIRED", "COMMIT_EXPIRED", "COMMITTED"):
+                        if current_lifecycle != ReceiptStatus.PREPARED.value:
+                            raise CustodyIntegrityError(f"{event_type} requires exactly one prior PREPARED event")
+                        tx_lifecycle[txid] = expected_status
+                        latest_tx_receipt[txid] = receipt
+                        tx_status[txid] = expected_status
+                        tx_state_receipt_id[txid] = receipt.receipt_id
+                    elif event_type == "COMMIT_REPLAY_REJECTED":
+                        if current_lifecycle != ReceiptStatus.COMMITTED.value:
+                            raise CustodyIntegrityError("commit replay rejection is not auxiliary to a committed transaction")
+                        if payload.get("original_committed_receipt") != tx_state_receipt_id.get(txid):
+                            raise CustodyIntegrityError("commit replay rejection does not reference the original committed receipt")
                 if event_type == "RECOVERY_AUTHORIZED":
                     auth_id = payload.get("recovery_authorization_id")
                     if not isinstance(auth_id, str) or auth_id in recovery_events:
                         raise CustodyIntegrityError("duplicate or invalid recovery authorization event")
+                    stream_id = payload.get("stream_id")
+                    previous = latest_committed.get(stream_id) if isinstance(stream_id, str) else None
+                    if previous is None:
+                        raise CustodyIntegrityError("recovery authorization was issued before the stream had a committed floor")
+                    if (
+                        payload.get("previous_lineage_id") != previous["lineage_id"]
+                        or payload.get("previous_generation") != previous["generation"]
+                        or type(payload.get("target_generation")) is not int
+                        or payload["target_generation"] <= previous["generation"]
+                        or payload.get("target_lineage_id") == previous["lineage_id"]
+                        or payload.get("lineage_parent_id") != previous["lineage_id"]
+                        or receipt.operation != "authorize_recovery"
+                        or receipt.recovery_authorization_id != auth_id
+                        or receipt.stream_id != stream_id
+                        or receipt.previous_lineage_id != previous["lineage_id"]
+                        or receipt.lineage_id != payload.get("target_lineage_id")
+                        or receipt.lineage_parent_id != previous["lineage_id"]
+                        or receipt.previous_generation != previous["generation"]
+                        or receipt.target_generation != payload.get("target_generation")
+                        or receipt.previous_checkpoint_digest != previous["checkpoint_digest"]
+                    ):
+                        raise CustodyIntegrityError("recovery authorization does not bind the reconstructed floor at issuance")
                     recovery_events[auth_id] = (row, payload, receipt)
 
             elif event_type in state_events or event_type == "COMMIT_REPLAY_REJECTED":
@@ -1329,6 +1378,8 @@ class SimulatedCustodyAuthority:
     ) -> CustodyReceipt:
         if not authorization_proof or not isinstance(authorization_proof, str):
             raise CustodyRejected("NO_RECOVERY_AUTH", "explicit recovery authorization proof is required")
+        if lineage_parent_id != previous_lineage_id or target_lineage_id == previous_lineage_id:
+            raise CustodyRejected("WRONG_LINEAGE_PARENT", "new lineage parent must be the currently authorized previous lineage")
         if target_generation <= previous_generation:
             raise CustodyRejected("NON_MONOTONIC_GENERATION", "target generation must exceed previous generation")
         txid = transaction_id or f"recovery:{uuid.uuid4()}"
@@ -1357,7 +1408,8 @@ class SimulatedCustodyAuthority:
                 "recovery_authorization_id": auth_id, "stream_id": stream_id,
                 "previous_lineage_id": previous_lineage_id, "target_lineage_id": target_lineage_id,
                 "lineage_parent_id": lineage_parent_id, "previous_generation": previous_generation,
-                "target_generation": target_generation, "authorization_proof_digest": sha256_hex(authorization_proof.encode()),
+                "target_generation": target_generation, "previous_checkpoint_digest": floor["checkpoint_digest"],
+                "authorization_proof_digest": sha256_hex(authorization_proof.encode()),
                 "receipt_id": receipt.receipt_id,
             })
             self._fault("authorize_recovery.before_atomic_commit")
