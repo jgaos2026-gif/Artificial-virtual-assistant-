@@ -579,6 +579,8 @@ class SimulatedCustodyAuthority:
             event_type = row["event_type"]
             txid = row["transaction_id"]
             receipt: CustodyReceipt | None = None
+            if event_type not in state_events and event_type != "COMMIT_REPLAY_REJECTED":
+                raise CustodyIntegrityError("custody journal contains an unknown event type")
             if authority_revoked:
                 raise CustodyIntegrityError("journal contains events after authority revocation")
             if active_key_id in revoked:
@@ -591,6 +593,8 @@ class SimulatedCustodyAuthority:
             if row["key_id"] != expected_event_key or expected_event_key in revoked:
                 raise CustodyIntegrityError("journal event was not authenticated by the authorized active key")
             receipt_id = payload.get("receipt_id")
+            if receipt_id is None:
+                raise CustodyIntegrityError("custody journal event is missing its receipt reference")
             if receipt_id is not None:
                 if not isinstance(receipt_id, str) or receipt_id in referenced_receipts:
                     raise CustodyIntegrityError("journal contains a duplicate or invalid receipt reference")
@@ -669,6 +673,7 @@ class SimulatedCustodyAuthority:
                     auth_id = payload.get("recovery_authorization_id")
                     valid_order = (
                         isinstance(auth_id, str)
+                        and auth_id in recovery_events
                         and payload["generation"] > previous["generation"]
                         and payload["sequence_no"] == 0
                         and payload["previous_checkpoint_digest"] == previous["checkpoint_digest"]
