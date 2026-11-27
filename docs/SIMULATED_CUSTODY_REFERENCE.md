@@ -22,6 +22,15 @@ Receipts and journal events use explicit test-only HMAC-SHA256 keys supplied by 
 
 Journal events form a SHA-256 chain and each event is authenticated with the configured test key. Verification checks contiguous event positions, ordering, hash links, duplicate event hashes/entries, payload shape, and the authenticated head before deriving state. The verifier reconstructs the latest committed checkpoint per stream and reconciles floor rows, transaction lifecycle, receipt history, recovery authorization rows, authority epoch, active key, authority revocation, and revoked-key records against that event history. In-place row edits and rollback to an earlier still-valid committed floor are expected to fail closed. This remains a local simulator: an attacker able to restore the entire database, its event history, metadata, and the process-held HMAC key to an older internally consistent snapshot can roll the simulator back. That limitation is intentional and must remain visible in all reports.
 
+
+## Reservation ownership and lease boundaries
+
+A position row represents an active PREPARED reservation or a committed position, not a permanent record of every attempted reservation. When a PREPARED lease expires, the transaction and its signed EXPIRED receipt remain in the transaction/receipt history and an authenticated RESERVATION_EXPIRED event is appended, while the active position-ownership row is released. A later transaction may reacquire that position under the same serialized SQLite write transaction. A still-live reservation or committed position blocks competing ownership. Rejected and expired transactions must not retain position ownership. Lease expiry uses one boundary everywhere: custody considers a lease expired when \`now >= lease_expires_at\`; lease time does not determine checkpoint ordering.
+
+## Receipt authenticity is not admission
+
+\`VerificationResult.authenticated\` reports whether the receipt signature was authenticated. \`lifecycle_status\` reports the signed lifecycle state. \`valid\` means the requested receipt-verification checks succeeded; it does not mean the receipt authorizes memory or checkpoint admission. \`admission_ready\` is always \`false\` in this reference implementation because it does not implement AVA's admission path or independently prove the full admission conditions. A signed PREPARED, REJECTED, EXPIRED, or COMMITTED receipt is not, by signature alone, authority to admit anything. The caller must separately enforce the required lifecycle, scope, current custody floor, lineage, chain, and AVA policy. This simulator does not implement that caller-side admission operation.
+
 ## Required environment label
 
 All receipts, floor attestations, verification results, and transaction records carry `SIMULATED_CUSTODY`. No passing test here establishes production anti-rollback protection or external custody independence.
