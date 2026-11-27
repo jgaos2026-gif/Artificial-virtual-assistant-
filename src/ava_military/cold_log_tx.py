@@ -24,7 +24,7 @@ class TransactionalColdLog:
             return True
         with self.path.open("rb") as stream:
             raw = stream.read()
-        if raw and not raw.endswith(b"\\n"):
+        if raw and not raw.endswith(b"\n"):
             raise ValueError("partial final record; recovery is required before append")
         for line in raw.splitlines():
             value = json.loads(line)
@@ -35,7 +35,7 @@ class TransactionalColdLog:
     def append(self, record):
         raw = json.dumps(
             record, sort_keys=True, separators=(",", ":"), allow_nan=False
-        ).encode("utf-8") + b"\\n"
+        ).encode("utf-8") + b"\n"
         with self._exclusive_guard():
             self.verify_existing()
             fd = os.open(self.path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
