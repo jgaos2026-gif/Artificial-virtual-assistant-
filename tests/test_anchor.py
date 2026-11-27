@@ -223,6 +223,20 @@ def test_brick_version_and_digest_are_pinned_for_wake(tmp_path):
         CompositeWakeVerifier(authority, GoodSpine(), bricks, (wrong,)).verify_wake(snapshot, receipt, "memory-main")
 
 
+def test_wake_rejects_replayed_but_valid_old_anchor(tmp_path):
+    _, authority, log = make_log(tmp_path)
+    old_snapshot = log.verify()
+    old_receipt = SpineReceipt(old_snapshot.generation, old_snapshot.head_hash, "b" * 64, "spine-v", "abcd")
+    pin = BrickPin("memory", "1.0.0", "a" * 64)
+    bricks = GoodBricks()
+    bricks.valid.add((pin.brick_id, pin.version, pin.manifest_digest))
+    append_one(log, "later-record")
+    with pytest.raises(AnchorError, match="stale anchor replay"):
+        CompositeWakeVerifier(authority, GoodSpine(), bricks, (pin,)).verify_wake(
+            old_snapshot, old_receipt, "memory-main"
+        )
+
+
 def test_revoked_exact_brick_pin_denies_wake(tmp_path):
     _, authority, log = make_log(tmp_path)
     snapshot = log.verify()
