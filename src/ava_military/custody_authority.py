@@ -576,6 +576,8 @@ class SimulatedCustodyAuthority:
             event_type = row["event_type"]
             txid = row["transaction_id"]
             receipt: CustodyReceipt | None = None
+            if authority_revoked:
+                raise CustodyIntegrityError("journal contains events after authority revocation")
             if active_key_id in revoked:
                 raise CustodyIntegrityError("journal attempts to continue with a revoked active key")
             expected_event_key = (
@@ -723,6 +725,7 @@ class SimulatedCustodyAuthority:
                     raise CustodyIntegrityError("authority revocation epoch is inconsistent")
                 if (
                     receipt is None or receipt.authority_epoch != next_epoch
+                    or receipt.key_id != active_key_id
                     or payload.get("target_authority_id") != self.authority_id
                     or payload.get("authority_revoked") is not True
                     or payload.get("new_active_key_id") != receipt.key_id
