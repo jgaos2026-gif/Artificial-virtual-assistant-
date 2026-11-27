@@ -116,8 +116,6 @@ class MemoryBraid:
         self.warm_limit = warm_limit
         self.hot: OrderedDict[str, MemoryRecord] = OrderedDict()
         self.warm: OrderedDict[str, MemoryRecord] = OrderedDict()
-        self._records: dict[str, MemoryRecord] = {}
-        self._links: list[ContradictionLink] = []
         self._head = "0" * 64
         self._sequence = 0
         if self.cold_path.exists():
@@ -129,7 +127,48 @@ class MemoryBraid:
 
     @property
     def contradiction_links(self) -> tuple[ContradictionLink, ...]:
-        return tuple(self._links)
+        return tuple(
+            ContradictionLink(event["left_id"], event["right_id"])
+            for event in self._iter_events()
+            if event.get("type") == "CONTRADICTION_LINK"
+        )
+
+    def _iter_events(self):
+        """Stream and verify COLD events without retaining the archive in RAM."""
+        if not self.cold_path.exists():
+            return
+        previous = "0" * 64
+        sequence = 0
+        with self.cold_path.open("rb") as stream:
+            while True:
+                prefix = stream.read(4)
+                if not prefix:
+                    break
+                if len(prefix) != 4:
+                    raise ValueError("truncated COLD length prefix")
+                size = struct.unpack(">I", prefix)[0]
+                if size == 0 or size > MAX_RECORD_BYTES:
+                    raise ValueError("invalid COLD record length")
+                raw = stream.read(size)
+                if len(raw) != size:
+                    raise ValueError("truncated COLD record")
+                envelope = json.loads(raw)
+                if envelope.get("sequence") != sequence or envelope.get("previous_hash") != previous:
+                    raise ValueError("COLD sequence or chain link mismatch")
+                body = {k: envelope[k] for k in ("sequence", "previous_hash", "event")}
+                digest = hashlib.sha256(_canonical(body)).hexdigest()
+                if envelope.get("entry_hash") != digest:
+                    raise ValueError("COLD record hash mismatch")
+                previous = digest
+                sequence += 1
+                yield envelope["event"]
+
+    @staticmethod
+    def _record_from_event(event: dict[str, Any]) -> MemoryRecord | None:
+        if event.get("type") != "MEMORY_COMMIT":
+            return None
+        data = event["record"]
+        return MemoryRecord(data["record_id"], data["source_id"], data["content"], data["observed_at"], TrustStage(data["stage"]), data["content_sha256"], data.get("simulated", False))
 
     def _append_cold(self, event: dict[str, Any]) -> None:
         body = {"sequence": self._sequence, "previous_hash": self._head, "event": event}
@@ -199,8 +238,9 @@ class MemoryBraid:
             raise ValueError("memory content exceeds maximum size")
         digest = hashlib.sha256(raw_content).hexdigest()
         rid = _record_id(source_id, content, stamp)
-        if rid in self._records:
-            return self._records[rid]
+        existing = self.record(rid)
+        if existing is not None:
+            return existing
         record = MemoryRecord(rid, source_id, content, stamp, TrustStage.COMMIT, digest)
         event = {
             "type": "MEMORY_COMMIT",
@@ -212,7 +252,6 @@ class MemoryBraid:
             "certification_id": assurance.certification_id,
         }
         self._append_cold(event)
-        self._records[rid] = record
         self._put_bounded(self.warm, rid, record, self.warm_limit)
         self._put_bounded(self.hot, rid, record, self.hot_limit)
         return record
@@ -225,14 +264,13 @@ class MemoryBraid:
             cache.popitem(last=False)
 
     def link_contradiction(self, left_id: str, right_id: str) -> ContradictionLink:
-        if left_id == right_id or left_id not in self._records or right_id not in self._records:
+        if left_id == right_id or self.record(left_id) is None or self.record(right_id) is None:
             raise ValueError("contradiction links require two distinct known records")
-        for link in self._links:
+        for link in self.contradiction_links:
             if {link.left_id, link.right_id} == {left_id, right_id}:
                 return link
         link = ContradictionLink(left_id, right_id)
         self._append_cold({"type": "CONTRADICTION_LINK", "left_id": left_id, "right_id": right_id})
-        self._links.append(link)
         return link
 
     def retrieve(self, record_ids: Iterable[str], *, limit: int = MIN_RETRIEVAL) -> tuple[MemoryRecord, ...]:
@@ -240,9 +278,10 @@ class MemoryBraid:
             raise ValueError("retrieval limit must be between 1 and 7")
         found: list[MemoryRecord] = []
         for rid in record_ids:
-            record = self.hot.get(rid) or self.warm.get(rid) or self._records.get(rid)
+            record = self.hot.get(rid) or self.warm.get(rid) or self.record(rid)
             if record is not None:
                 found.append(record)
+                self._put_bounded(self.warm, rid, record, self.warm_limit)
                 self._put_bounded(self.hot, rid, record, self.hot_limit)
                 if len(found) >= limit:
                     break
@@ -254,7 +293,15 @@ class MemoryBraid:
         return count
 
     def record(self, record_id: str) -> MemoryRecord | None:
-        return self._records.get(record_id)
+        cached = self.hot.get(record_id) or self.warm.get(record_id)
+        if cached is not None:
+            return cached
+        for event in self._iter_events():
+            record = self._record_from_event(event)
+            if record is not None and record.record_id == record_id:
+                self._put_bounded(self.warm, record_id, record, self.warm_limit)
+                return record
+        return None
 
 
 @dataclass(frozen=True)
