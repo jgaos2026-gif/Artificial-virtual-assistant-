@@ -5,7 +5,7 @@ import struct
 import pytest
 
 from ava_military.anchor import (
-    AnchorError, AnchorProposal, AnchorSnapshot, AnchoredColdLog, BrickPin, CompositeWakeVerifier,
+    AnchorError, AnchorProposal, AnchorSnapshot, AnchoredColdLog, BrickPin, BrickPinReceipt, CompositeWakeVerifier,
     SpineReceipt,
 )
 
@@ -64,11 +64,12 @@ class GoodBricks:
         self.revoked = set()
         self.valid = set()
 
-    def verify_exact_pin(self, pin):
-        return (pin.brick_id, pin.version, pin.manifest_digest) in self.valid
+    def get_pin_receipt(self, pin):
+        key = (pin.brick_id, pin.version, pin.manifest_digest)
+        return BrickPinReceipt(pin, key in self.revoked, 1, "brick-registry", "abcd")
 
-    def is_revoked(self, pin):
-        return (pin.brick_id, pin.version, pin.manifest_digest) in self.revoked
+    def verify_pin_receipt(self, receipt):
+        return (receipt.pin.brick_id, receipt.pin.version, receipt.pin.manifest_digest) in self.valid
 
 
 def make_log(tmp_path):
@@ -273,9 +274,9 @@ def test_brick_verifier_exception_denies_wake(tmp_path):
     snapshot = log.verify()
     pin = BrickPin("memory", "1.0.0", "a" * 64)
     class ExplodingBricks:
-        def verify_exact_pin(self, pin):
+        def get_pin_receipt(self, pin):
             raise RuntimeError("registry unavailable")
-        def is_revoked(self, pin):
+        def verify_pin_receipt(self, receipt):
             return False
     receipt = SpineReceipt(snapshot.generation, snapshot.head_hash, "b" * 64, "spine-v", "abcd")
     with pytest.raises(AnchorError, match="wake verifier exception"):
