@@ -19,12 +19,23 @@ def test_payload_mutation_is_detected():
     assert not HashChainLedger.verify(changed)
 
 
-def test_deletion_and_reordering_are_detected():
+def test_valid_prefix_requires_external_head_anchor_to_detect_truncation():
     ledger = HashChainLedger()
     ledger.append({"n": 1})
     ledger.append({"n": 2})
     ledger.append({"n": 3})
-    assert not HashChainLedger.verify(ledger.entries[:2])
+    trusted_head = ledger.entries[-1].entry_hash
+    prefix = ledger.entries[:2]
+    # A prefix is internally valid. The external head anchor exposes truncation.
+    assert HashChainLedger.verify(prefix)
+    assert not HashChainLedger.verify(prefix, expected_head_hash=trusted_head)
+
+
+def test_reordering_is_detected():
+    ledger = HashChainLedger()
+    ledger.append({"n": 1})
+    ledger.append({"n": 2})
+    ledger.append({"n": 3})
     assert not HashChainLedger.verify(list(reversed(ledger.entries)))
 
 
