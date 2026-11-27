@@ -13,7 +13,7 @@ from .shared_cross_process_lock import CrossProcessAdvisoryLock
 
 class TransactionalColdLog:
     def __init__(self, path):
-        self.path = Path(path).resolve(strict=False)
+        self.path = Path(path)
         self._cross_process_lock = CrossProcessAdvisoryLock(self.path)
 
     def _exclusive_guard(self):
