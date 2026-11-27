@@ -24,9 +24,9 @@ def setup_auth(tmp_path):
 
 def test_large_chunk_of_short_lines_is_not_one_oversized_line(tmp_path):
     p=tmp_path/"cold.jsonl"
-    p.write_bytes(b'{"a":1}\n{"b":2}\n{"c":3}\n')
-    records,complete,omitted,diags=_read_jsonl(p,max_records=10,max_line_bytes=8)
-    assert len(records)==3 and complete and omitted==0
+    p.write_bytes(b'{"a":1}\n' * 9000)  # 72 KB, across multiple 64 KB reads
+    records,complete,omitted,diags=_read_jsonl(p,max_records=10000,max_line_bytes=8)
+    assert len(records)==9000 and complete and omitted==0
     assert not diags
 
 def test_exact_max_records_at_eof_is_not_false_truncation(tmp_path):
