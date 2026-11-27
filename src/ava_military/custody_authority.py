@@ -58,6 +58,7 @@ class VerificationOutcome(str, Enum):
     AUTHENTIC_CURRENT = "AUTHENTIC_CURRENT"
     STALE_FLOOR = "STALE_FLOOR"
     CONSUMED_AUTHORIZATION = "CONSUMED_AUTHORIZATION"
+    RESERVATION_NOT_ACTIVE = "RESERVATION_NOT_ACTIVE"
 
 
 class CustodyError(RuntimeError):
@@ -198,6 +199,7 @@ class VerificationResult:
     admission_ready: bool = False
     issued: bool = False
     signer_authorized: bool = False
+    reservation_active: bool = False
 
 
 @dataclass(frozen=True)
@@ -1375,12 +1377,14 @@ class SimulatedCustodyAuthority:
         def authenticated_result(
             outcome: VerificationOutcome, valid: bool, reason: str, *,
             issued: bool = False, signer_authorized: bool = False,
+            reservation_active: bool = False,
         ) -> VerificationResult:
             return VerificationResult(
                 outcome, valid, CUSTODY_MODE, reason,
                 authenticated=True, lifecycle_status=item.custody_state,
                 admission_ready=False, issued=issued,
                 signer_authorized=signer_authorized,
+                reservation_active=reservation_active,
             )
 
         conn = self._connect()
@@ -1422,11 +1426,44 @@ class SimulatedCustodyAuthority:
         if item.custody_state == ReceiptStatus.RECOVERY_AUTHORIZED.value and item.recovery_authorization_id:
             conn = self._connect()
             try:
-                auth_row = conn.execute("SELECT consumed_by FROM recovery_authorizations WHERE recovery_authorization_id=?", (item.recovery_authorization_id,)).fetchone()
+                auth_row = conn.execute(
+                    "SELECT * FROM recovery_authorizations WHERE recovery_authorization_id=?",
+                    (item.recovery_authorization_id,),
+                ).fetchone()
                 if auth_row is None:
-                    return authenticated_result(VerificationOutcome.UNISSUED_RECEIPT, False, "recovery authorization receipt has no matching authorization record", issued=True)
+                    return authenticated_result(
+                        VerificationOutcome.UNISSUED_RECEIPT, False,
+                        "recovery authorization receipt has no matching authorization record",
+                        issued=True,
+                    )
                 if auth_row["consumed_by"] is not None:
-                    return authenticated_result(VerificationOutcome.CONSUMED_AUTHORIZATION, False, "recovery authorization was already consumed by a committed transition", issued=True, signer_authorized=True)
+                    return authenticated_result(
+                        VerificationOutcome.CONSUMED_AUTHORIZATION, False,
+                        "recovery authorization was already consumed by a committed transition",
+                        issued=True, signer_authorized=True,
+                    )
+                floor = conn.execute(
+                    "SELECT * FROM floors WHERE stream_id=?", (auth_row["stream_id"],)
+                ).fetchone()
+                still_current = bool(
+                    floor is not None
+                    and floor["lineage_id"] == auth_row["previous_lineage_id"]
+                    and floor["generation"] == auth_row["previous_generation"]
+                    and floor["checkpoint_digest"] == item.previous_checkpoint_digest
+                    and item.stream_id == auth_row["stream_id"]
+                    and item.previous_lineage_id == auth_row["previous_lineage_id"]
+                    and item.lineage_id == auth_row["target_lineage_id"]
+                    and item.lineage_parent_id == auth_row["lineage_parent_id"]
+                    and item.previous_generation == auth_row["previous_generation"]
+                    and item.target_generation == auth_row["target_generation"]
+                    and item.recovery_authorization_id == auth_row["recovery_authorization_id"]
+                )
+                if not still_current:
+                    return authenticated_result(
+                        VerificationOutcome.STALE_FLOOR, False,
+                        "recovery authorization is authentic and issued but its source floor has advanced",
+                        issued=True, signer_authorized=True,
+                    )
             finally:
                 conn.close()
         if item.lease_expires_at is not None and item.custody_state in (ReceiptStatus.PREPARED.value, ReceiptStatus.RECOVERY_AUTHORIZED.value):
@@ -1442,6 +1479,46 @@ class SimulatedCustodyAuthority:
             status = expected_status.value if isinstance(expected_status, ReceiptStatus) else str(expected_status)
             if item.custody_state != status:
                 return authenticated_result(VerificationOutcome.WRONG_STATUS, False, "receipt is authentic and issued but lifecycle status does not match the requested status", issued=True, signer_authorized=True)
+        # require_current applies only to committed checkpoint receipts.
+        if require_current and item.custody_state != ReceiptStatus.COMMITTED.value:
+            return authenticated_result(
+                VerificationOutcome.WRONG_STATUS, False,
+                "require_current applies only to committed checkpoint receipts",
+                issued=True, signer_authorized=True,
+            )
+        if item.custody_state == ReceiptStatus.PREPARED.value and item.operation == "prepare":
+            conn = self._connect()
+            try:
+                tx = conn.execute(
+                    "SELECT status, receipt_json, lease_expires_at FROM transactions WHERE transaction_id=?",
+                    (item.transaction_id,),
+                ).fetchone()
+                active_reservation = bool(
+                    tx is not None
+                    and tx["status"] == ReceiptStatus.PREPARED.value
+                    and self._decode_receipt(tx["receipt_json"]) == item
+                    and tx["lease_expires_at"] is not None
+                    and self._now() < float(tx["lease_expires_at"])
+                )
+            finally:
+                conn.close()
+            if active_reservation:
+                return authenticated_result(
+                    VerificationOutcome.VALID, True,
+                    "receipt is authentic, issued, and is the live PREPARED reservation; admission_ready=false",
+                    issued=True, signer_authorized=True, reservation_active=True,
+                )
+            if expected_status is not None:
+                return authenticated_result(
+                    VerificationOutcome.WRONG_STATUS, False,
+                    "PREPARED receipt is authentic history but no longer represents the transaction current lifecycle",
+                    issued=True, signer_authorized=True,
+                )
+            return authenticated_result(
+                VerificationOutcome.RESERVATION_NOT_ACTIVE, True,
+                "PREPARED receipt is authentic historical evidence; its reservation is no longer active",
+                issued=True, signer_authorized=True, reservation_active=False,
+            )
         if item.custody_state == ReceiptStatus.COMMITTED.value and item.stream_id is not None:
             conn = self._connect()
             try:
