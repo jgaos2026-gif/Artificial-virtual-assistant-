@@ -38,6 +38,8 @@ A position row represents an active PREPARED reservation or a committed position
 
 `verify_receipt()` begins one explicit SQLite read transaction before checking the receipt signature, then performs all database-backed checks without closing or reopening the connection. Journal reconstruction, receipt issuance lookup, active/revoked signer and epoch state, recovery authorization consumption and source-floor checks, lease/lifecycle checks, reservation ownership, and current-floor comparison therefore use one consistent database snapshot. In this DELETE-journal simulator, a concurrent writer cannot commit a key/authority or floor transition until that read transaction finishes. This is snapshot consistency within the local SQLite failure domain, not independent custody or protection from a compromised process/database.
 
+The other read-side state APIs use the same explicit read-transaction boundary: `read_floor()`, `verify_floor_attestation()`, `query_transaction()`, and `journal_history()` begin a SQLite read transaction before reconstructing authenticated state and retain it through their remaining database reads. This prevents a concurrent floor or key transition from producing an attestation or reconciliation result assembled from multiple database states. Write-side operations continue to use `BEGIN IMMEDIATE`.
+
 Verification outcome precedence is deterministic:
 1. Receipt schema, authority, simulator algorithm, and signature validation.
 2. Begin one SQLite read transaction, reconstruct authenticated journal/state, and look up exact receipt issuance.
