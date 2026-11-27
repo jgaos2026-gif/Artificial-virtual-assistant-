@@ -420,3 +420,142 @@ def test_full_simulator_database_snapshot_restore_can_rollback_floor_by_design(t
     assert floor.sequence_no == 0
     assert floor.checkpoint_digest == cp10.checkpoint_digest
     # This is an explicit simulator limitation, not a successful anti-rollback test.
+
+def test_floor_cannot_be_rolled_back_to_an_earlier_valid_commit(tmp_path):
+    auth = make_authority(tmp_path)
+    _, cp10 = prepare_commit(auth, b"cp-10", tx="cp-10")
+    cp11_candidate = candidate(b"cp-11", seq=1, previous=cp10.checkpoint_digest)
+    prepare_commit(auth, b"cp-11", tx="cp-11", cand=cp11_candidate)
+    before = auth.journal_history()
+    conn = sqlite3.connect(auth.path)
+    conn.execute(
+        "UPDATE floors SET generation=0,sequence_no=0,checkpoint_digest=?,"
+        "previous_checkpoint_digest=?,receipt_id=?,transaction_id=? WHERE stream_id=?",
+        (cp10.checkpoint_digest, "0" * 64, cp10.receipt_id, "cp-10", "stream-1"),
+    )
+    conn.commit()
+    conn.close()
+    with pytest.raises(CustodyIntegrityError, match="regresses|latest committed"):
+        auth.read_floor("stream-1")
+    assert len(before) == 4
+    conn = sqlite3.connect(auth.path)
+    assert conn.execute("SELECT COUNT(*) FROM journal_events").fetchone()[0] == len(before)
+    conn.close()
+
+
+def test_recovery_authorization_row_cannot_widen_signed_scope(tmp_path):
+    auth = make_authority(tmp_path)
+    _, first = prepare_commit(auth)
+    authorization = auth.authorize_recovery(
+        stream_id="stream-1", previous_lineage_id="lineage-0",
+        target_lineage_id="lineage-1", lineage_parent_id="lineage-0",
+        previous_generation=0, target_generation=1,
+        authorization_proof="owner quorum",
+    )
+    good = candidate(
+        b"cp-new", seq=0, previous=first.checkpoint_digest,
+        generation=1, lineage="lineage-1",
+        recovery=authorization.recovery_authorization_id,
+        previous_lineage="lineage-0", parent="lineage-0",
+        previous_generation=0, target_generation=1,
+    )
+    prepare_commit(auth, b"cp-new", tx="recovery-commit", cand=good)
+    history_before = auth.journal_history()
+    conn = sqlite3.connect(auth.path)
+    conn.execute(
+        "UPDATE recovery_authorizations SET target_lineage_id='attacker-lineage' "
+        "WHERE recovery_authorization_id=?",
+        (authorization.recovery_authorization_id,),
+    )
+    conn.commit()
+    conn.close()
+    with pytest.raises(CustodyIntegrityError, match="recovery authorization row"):
+        auth.read_floor("stream-1")
+    assert len(history_before) == 4
+
+
+@pytest.mark.parametrize(
+    "tamper_sql,tamper_args",
+    [
+        ("UPDATE meta SET value='0' WHERE key='authority_epoch'", ()),
+        ("UPDATE meta SET value='key-a' WHERE key='active_key_id'", ()),
+        ("DELETE FROM revocations WHERE key_id='key-a'", ()),
+        ("UPDATE revocations SET reason_code='rewritten' WHERE key_id='key-a'", ()),
+    ],
+)
+def test_authority_state_tampering_is_detected_against_journal(tmp_path, tamper_sql, tamper_args):
+    auth = make_authority(tmp_path)
+    prepare_commit(auth)
+    auth.revoke_authority(
+        target_key_id="key-a", new_authority_epoch=1,
+        reason="planned rotation", authorization_proof="owner-approved",
+        next_active_key_id="key-b",
+    )
+    conn = sqlite3.connect(auth.path)
+    conn.execute(tamper_sql, tamper_args)
+    conn.commit()
+    conn.close()
+    with pytest.raises(CustodyIntegrityError, match="authority|revocation"):
+        auth.read_floor("stream-1")
+
+
+def test_receipt_history_row_cannot_be_changed_independently(tmp_path):
+    auth = make_authority(tmp_path)
+    _, committed = prepare_commit(auth)
+    before = auth.journal_history()
+    conn = sqlite3.connect(auth.path)
+    conn.execute(
+        "UPDATE receipts SET custody_state='REJECTED' WHERE receipt_id=?",
+        (committed.receipt_id,),
+    )
+    conn.commit()
+    conn.close()
+    with pytest.raises(CustodyIntegrityError, match="receipt history metadata"):
+        auth.read_floor("stream-1")
+    assert len(before) == 2
+
+
+def test_journal_sequence_gap_is_detected_even_before_state_reconstruction(tmp_path):
+    auth = make_authority(tmp_path)
+    prepare_commit(auth)
+    conn = sqlite3.connect(auth.path)
+    conn.execute("UPDATE journal_events SET event_no=9 WHERE event_no=1")
+    conn.commit()
+    conn.close()
+    with pytest.raises(CustodyIntegrityError, match="sequence has a gap"):
+        auth.read_floor("stream-1")
+
+
+def test_authenticated_duplicate_journal_entry_is_rejected(tmp_path):
+    import hmac
+
+    auth = make_authority(tmp_path)
+    auth.prepare(candidate(), "duplicate-event")
+    conn = sqlite3.connect(auth.path)
+    row = conn.execute(
+        "SELECT event_type,transaction_id,payload_json,key_id,event_hash "
+        "FROM journal_events ORDER BY event_no DESC LIMIT 1"
+    ).fetchone()
+    event_type, transaction_id, payload_json, key_id, previous_hash = row
+    body = {
+        "event_type": event_type,
+        "transaction_id": transaction_id,
+        "payload_json": payload_json,
+        "previous_hash": previous_hash,
+        "key_id": key_id,
+    }
+    event_hash = sha256_hex(canonical(body))
+    mac = hmac.new(
+        KEYS[key_id], canonical({**body, "event_hash": event_hash}), hashlib.sha256
+    ).hexdigest()
+    conn.execute(
+        "INSERT INTO journal_events(event_type,transaction_id,payload_json,previous_hash,event_hash,key_id,mac) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (event_type, transaction_id, payload_json, previous_hash, event_hash, key_id, mac),
+    )
+    conn.execute("UPDATE meta SET value=? WHERE key='event_head'", (event_hash,))
+    conn.commit()
+    conn.close()
+    with pytest.raises(CustodyIntegrityError, match="duplicate custody journal event entry"):
+        auth.read_floor("stream-1")
+
