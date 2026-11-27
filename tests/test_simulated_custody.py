@@ -8,7 +8,7 @@ import pytest
 
 from ava_military.custody_authority import (
     AmbiguousCommitError, CUSTODY_MODE, CheckpointCandidate, CustodyConflict,
-    CustodyIntegrityError, CustodyRejected, PersistenceEvidence, ReceiptStatus,
+    CustodyIntegrityError, CustodyRejected, CustodyUnavailable, PersistenceEvidence, ReceiptStatus,
     SimulatedCustodyAuthority, VerificationOutcome, canonical, sha256_hex,
 )
 
@@ -99,7 +99,9 @@ def test_prepare_commit_floor_and_durable_journal_are_atomic(tmp_path):
     assert prepared.custody_mode == committed.custody_mode == CUSTODY_MODE
     assert auth.verify_receipt(prepared, expected_status=ReceiptStatus.PREPARED).valid
     assert auth.verify_receipt(prepared, expected_status=ReceiptStatus.COMMITTED).outcome == VerificationOutcome.WRONG_STATUS
-    assert auth.verify_receipt(committed, expected_status=ReceiptStatus.COMMITTED).valid
+    current = auth.verify_receipt(committed, expected_status=ReceiptStatus.COMMITTED)
+    assert current.valid and current.outcome == VerificationOutcome.AUTHENTIC_CURRENT
+    assert current.authenticated and current.issued and current.admission_ready is False
     floor = auth.read_floor("stream-1")
     assert auth.verify_floor_attestation(floor)
     assert floor.sequence_no == 0 and floor.checkpoint_digest == committed.checkpoint_digest
@@ -226,7 +228,10 @@ def test_historical_committed_receipt_does_not_roll_back_current_floor(tmp_path)
     _, first = prepare_commit(auth, b"cp-10", tx="cp-10")
     second_candidate = candidate(b"cp-11", seq=1, previous=first.checkpoint_digest)
     _, second = prepare_commit(auth, b"cp-11", tx="cp-11", cand=second_candidate)
-    assert auth.verify_receipt(first, expected_status="COMMITTED").valid
+    historical = auth.verify_receipt(first, expected_status="COMMITTED")
+    assert historical.valid and historical.outcome == VerificationOutcome.AUTHENTIC_HISTORICAL
+    assert historical.authenticated and historical.issued and historical.admission_ready is False
+    assert auth.verify_receipt(first, require_current=True).outcome == VerificationOutcome.STALE_FLOOR
     floor = auth.read_floor("stream-1")
     assert floor.sequence_no == 1 and floor.checkpoint_digest == second.checkpoint_digest
     assert first.sequence_no == 0
@@ -1006,3 +1011,69 @@ def test_rejected_initial_prepare_transaction_id_cannot_be_reused(tmp_path):
     with pytest.raises(CustodyConflict, match="TRANSACTION_ID_TERMINAL"):
         auth.prepare(candidate(), "terminal-rejected-id")
 
+
+def test_combined_multihop_recovery_key_rotation_and_authority_revocation(tmp_path):
+    keys = {"key-a": b"A" * 32, "key-b": b"B" * 32, "key-c": b"C" * 32}
+    auth = SimulatedCustodyAuthority(tmp_path / "combined.sqlite3", authority_id="test-custody", keys=keys, active_key_id="key-a", clock=Clock())
+    _, cp0 = prepare_commit(auth, b"generation-0", tx="combined-g0")
+    assert auth.read_floor("stream-1").generation == 0
+    auth0 = auth.authorize_recovery(stream_id="stream-1", previous_lineage_id="lineage-0", target_lineage_id="lineage-1", lineage_parent_id="lineage-0", previous_generation=0, target_generation=1, authorization_proof="simulated-proof-0")
+    auth.revoke_authority(target_key_id="key-a", new_authority_epoch=1, reason="rotate A to B", authorization_proof="simulated-proof-rotate-a", next_active_key_id="key-b")
+    assert auth.verify_receipt(auth0).outcome == VerificationOutcome.REVOKED_KEY
+    stale0 = candidate(b"stale-g1", generation=1, lineage="lineage-1", previous=cp0.checkpoint_digest, recovery=auth0.recovery_authorization_id, previous_lineage="lineage-0", parent="lineage-0", previous_generation=0, target_generation=1)
+    assert auth.prepare(stale0, "stale-auth-a").custody_state == "REJECTED"
+    assert auth.read_floor("stream-1").generation == 0
+    auth1 = auth.authorize_recovery(stream_id="stream-1", previous_lineage_id="lineage-0", target_lineage_id="lineage-1", lineage_parent_id="lineage-0", previous_generation=0, target_generation=1, authorization_proof="simulated-proof-1")
+    cand1 = candidate(b"generation-1", generation=1, lineage="lineage-1", previous=cp0.checkpoint_digest, recovery=auth1.recovery_authorization_id, previous_lineage="lineage-0", parent="lineage-0", previous_generation=0, target_generation=1)
+    _, cp1 = prepare_commit(auth, b"generation-1", tx="combined-g1", cand=cand1)
+    assert auth.read_floor("stream-1").lineage_id == "lineage-1" and auth.read_floor("stream-1").generation == 1
+    assert auth.verify_receipt(auth1).outcome == VerificationOutcome.CONSUMED_AUTHORIZATION
+    auth.revoke_authority(target_key_id="key-b", new_authority_epoch=2, reason="rotate B to C", authorization_proof="simulated-proof-rotate-b", next_active_key_id="key-c")
+    assert auth.read_floor("stream-1").generation == 1
+    assert auth.verify_receipt(auth1).outcome == VerificationOutcome.REVOKED_KEY
+    auth2 = auth.authorize_recovery(stream_id="stream-1", previous_lineage_id="lineage-1", target_lineage_id="lineage-2", lineage_parent_id="lineage-1", previous_generation=1, target_generation=2, authorization_proof="simulated-proof-2")
+    cand2 = candidate(b"generation-2", generation=2, lineage="lineage-2", previous=cp1.checkpoint_digest, recovery=auth2.recovery_authorization_id, previous_lineage="lineage-1", parent="lineage-1", previous_generation=1, target_generation=2)
+    _, cp2 = prepare_commit(auth, b"generation-2", tx="combined-g2", cand=cand2)
+    floor2 = auth.read_floor("stream-1")
+    assert floor2.lineage_id == "lineage-2" and floor2.generation == 2 and floor2.checkpoint_digest == cp2.checkpoint_digest
+    assert auth.verify_receipt(cp2).outcome == VerificationOutcome.AUTHENTIC_CURRENT
+    assert auth.verify_receipt(cp1).outcome == VerificationOutcome.REVOKED_KEY
+    auth.revoke_authority(new_authority_epoch=3, target_authority_id="test-custody", reason="authority-wide shutdown", authorization_proof="simulated-authority-revocation")
+    with pytest.raises(CustodyUnavailable, match="authority is revoked"): auth.read_floor("stream-1")
+    assert auth.journal_history()[-1]["event_type"] == "AUTHORITY_REVOKED"
+
+def test_stale_epoch_is_distinct_from_revoked_key(tmp_path):
+    auth = make_authority(tmp_path); _, old = prepare_commit(auth)
+    auth.revoke_authority(target_key_id="key-a", new_authority_epoch=1, reason="rotate to B", authorization_proof="simulated", next_active_key_id="key-b")
+    forged = replace(old, key_id="key-b", authority_epoch=0, signature="")
+    forged = replace(forged, signature=auth._sign(auth._keys["key-b"], forged.payload()))
+    result = auth.verify_receipt(forged)
+    assert result.outcome == VerificationOutcome.STALE_EPOCH
+    assert result.authenticated is True and result.issued is False and result.admission_ready is False
+
+def test_coordinated_sqlite_only_edits_fail_closed_without_hmac_keys(tmp_path):
+    auth = make_authority(tmp_path); _, committed = prepare_commit(auth, b"coordinated-original", tx="coordinated")
+    conn = sqlite3.connect(auth.path)
+    row = conn.execute("SELECT payload_json FROM journal_events WHERE event_type='COMMITTED'").fetchone()
+    payload = json.loads(row[0]); payload["checkpoint_digest"] = "f" * 64
+    conn.execute("UPDATE journal_events SET payload_json=? WHERE event_type='COMMITTED'", (json.dumps(payload, sort_keys=True, separators=(",", ":")),))
+    conn.execute("UPDATE receipts SET custody_state='PREPARED' WHERE receipt_id=?", (committed.receipt_id,))
+    conn.execute("UPDATE transactions SET checkpoint_digest=? WHERE transaction_id='coordinated'", ("f" * 64,))
+    conn.execute("UPDATE floors SET checkpoint_digest=? WHERE stream_id='stream-1'", ("f" * 64,))
+    conn.commit(); conn.close()
+    with pytest.raises(CustodyIntegrityError): auth.read_floor("stream-1")
+
+def test_key_holding_attacker_can_forge_simulator_journal_authentication(tmp_path):
+    import hmac
+    auth = make_authority(tmp_path); prepare_commit(auth, b"key-holder-demo", tx="key-holder")
+    conn = sqlite3.connect(auth.path); conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM journal_events ORDER BY event_no DESC LIMIT 1").fetchone()
+    payload = json.loads(row["payload_json"]); payload["attacker_controlled_annotation"] = "forged by test key holder"
+    payload_json = canonical(payload).decode("utf-8")
+    body = {"event_type": row["event_type"], "transaction_id": row["transaction_id"], "payload_json": payload_json, "previous_hash": row["previous_hash"], "key_id": row["key_id"]}
+    event_hash = sha256_hex(canonical(body))
+    mac = hmac.new(auth._keys[row["key_id"]], canonical({**body, "event_hash": event_hash}), hashlib.sha256).hexdigest()
+    conn.execute("UPDATE journal_events SET payload_json=?,event_hash=?,mac=? WHERE event_no=?", (payload_json, event_hash, mac, row["event_no"]))
+    conn.execute("UPDATE meta SET value=? WHERE key='event_head'", (event_hash,)); conn.commit(); conn.close()
+    assert auth.read_floor("stream-1").generation == 0
+    assert auth.journal_history("key-holder")[-1]["payload"]["attacker_controlled_annotation"] == "forged by test key holder"
