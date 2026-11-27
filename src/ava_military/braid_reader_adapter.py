@@ -52,7 +52,7 @@ def _read_jsonl(path, *, max_records=100000, max_line_bytes=1048576):
                 break
             pos = 0
             while pos < len(chunk):
-                nl = chunk.find(b"\\n", pos)
+                nl = chunk.find(b"\n", pos)
                 stop = len(chunk) if nl < 0 else nl
                 piece = chunk[pos:stop]
                 if line_no >= max_records:
