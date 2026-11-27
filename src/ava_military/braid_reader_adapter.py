@@ -59,7 +59,9 @@ def _read_jsonl(path, *, max_records=100000, max_line_bytes=1048576,
         while True:
             remaining = max_total_bytes - total
             if remaining <= 0:
-                if os.read(fd, 1):  # more data exists beyond the budget
+                # Inspect file metadata instead of reading a lookahead byte:
+                # the raw-byte budget must also cap bytes fetched from disk.
+                if os.fstat(fd).st_size > total:
                     budget_hit = True
                 break
             chunk = os.read(fd, min(65536, remaining))
