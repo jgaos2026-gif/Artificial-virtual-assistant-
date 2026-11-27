@@ -1,8 +1,5 @@
 import multiprocessing as mp
 import os
-import time
-
-import pytest
 
 from ava_military.shared_cross_process_lock import CrossProcessAdvisoryLock, lock_path_for
 from ava_military.cold_log_tx import TransactionalColdLog
@@ -46,13 +43,13 @@ def _uncooperative_append(path, ready, proceed):
         raise RuntimeError("parent did not release uncooperative writer")
     # Deliberately bypass CrossProcessAdvisoryLock.
     with open(path, "ab", buffering=0) as stream:
-        stream.write(b'{"intruder":true}\\n')
+        stream.write(b'{"intruder":true}\n')
         os.fsync(stream.fileno())
 
 
 def test_uncooperative_writer_is_detected_by_post_read_currency_check(tmp_path):
     target = tmp_path / "cold.jsonl"
-    target.write_bytes(b'{"safe":true}\\n')
+    target.write_bytes(b'{"safe":true}\n')
     before = target.read_bytes()
     ctx = mp.get_context("spawn")
     ready, proceed = ctx.Event(), ctx.Event()
