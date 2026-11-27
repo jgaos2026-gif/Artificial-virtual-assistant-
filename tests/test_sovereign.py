@@ -94,7 +94,9 @@ def test_new_version_is_distinct_from_admitted_version():
 
 def test_affective_budget_is_hard_bounded_and_rejects_nonfinite():
     budget = affective_budget(1.0, 1.0)
-    assert budget == AffectiveBudget(1.2, 7, 3)
+    assert budget.attention_multiplier == pytest.approx(1.2)
+    assert budget.retrieval_breadth == 7
+    assert budget.simulation_branches == 3
     with pytest.raises(ValueError):
         affective_budget(float("nan"), 0.5)
     with pytest.raises(ValueError):
