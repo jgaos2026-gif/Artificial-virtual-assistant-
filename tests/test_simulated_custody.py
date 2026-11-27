@@ -712,3 +712,38 @@ def test_authentic_receipt_status_is_never_admission_authority(tmp_path):
     assert expired_check.lifecycle_status == ReceiptStatus.EXPIRED.value
     assert not expired_check.admission_ready
 
+def test_authenticated_unknown_journal_event_type_is_rejected(tmp_path):
+    import hmac
+
+    auth = make_authority(tmp_path)
+    auth.prepare(candidate(), "known-event")
+    conn = sqlite3.connect(auth.path)
+    previous_hash = conn.execute(
+        "SELECT event_hash FROM journal_events ORDER BY event_no DESC LIMIT 1"
+    ).fetchone()[0]
+    event_type = "UNKNOWN_EVENT"
+    transaction_id = None
+    payload_json = canonical({"receipt_id": "unissued-receipt"}).decode("utf-8")
+    key_id = "key-a"
+    body = {
+        "event_type": event_type,
+        "transaction_id": transaction_id,
+        "payload_json": payload_json,
+        "previous_hash": previous_hash,
+        "key_id": key_id,
+    }
+    event_hash = sha256_hex(canonical(body))
+    mac = hmac.new(
+        KEYS[key_id], canonical({**body, "event_hash": event_hash}), hashlib.sha256
+    ).hexdigest()
+    conn.execute(
+        "INSERT INTO journal_events(event_type,transaction_id,payload_json,previous_hash,event_hash,key_id,mac) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (event_type, transaction_id, payload_json, previous_hash, event_hash, key_id, mac),
+    )
+    conn.execute("UPDATE meta SET value=? WHERE key='event_head'", (event_hash,))
+    conn.commit()
+    conn.close()
+    with pytest.raises(CustodyIntegrityError, match="unknown event type"):
+        auth.read_floor("stream-1")
+
