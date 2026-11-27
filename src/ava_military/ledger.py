@@ -8,6 +8,7 @@ entire chain and the external anchor.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from dataclasses import dataclass
@@ -17,7 +18,12 @@ GENESIS = "0" * 64
 
 
 def canonical_bytes(value: dict[str, Any]) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    """The one serialization used for hashing. NaN/Infinity are rejected
+    (ValueError): they are not standard JSON, so strict parsers elsewhere
+    could not reproduce the hash."""
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ).encode("utf-8")
 
 
 @dataclass(frozen=True)
@@ -39,17 +45,26 @@ class HashChainLedger:
 
     @property
     def entries(self) -> tuple[LedgerEntry, ...]:
-        return tuple(self._entries)
+        # Hand out deep copies: no caller can reach stored payload objects.
+        return tuple(
+            LedgerEntry(e.sequence, e.previous_hash, copy.deepcopy(e.payload), e.entry_hash)
+            for e in self._entries
+        )
 
     def append(self, payload: dict[str, Any]) -> LedgerEntry:
         if not isinstance(payload, dict):
             raise TypeError("payload must be a dictionary")
         sequence = len(self._entries)
         previous = self._entries[-1].entry_hash if self._entries else GENESIS
-        digest = calculate_hash(sequence, previous, payload)
-        entry = LedgerEntry(sequence, previous, dict(payload), digest)
+        digest = calculate_hash(sequence, previous, payload)  # raises on NaN/Infinity
+        # Store an independent copy from canonical bytes so caller mutations cannot alter history.
+        stored = json.loads(canonical_bytes(payload))
+        if calculate_hash(sequence, previous, stored) != digest:
+            raise ValueError("payload does not survive canonical JSON round-trip")
+        entry = LedgerEntry(sequence, previous, stored, digest)
         self._entries.append(entry)
-        return entry
+        # append() must not leak the internal entry through its return value.
+        return LedgerEntry(sequence, previous, copy.deepcopy(stored), digest)
 
     @staticmethod
     def verify(
@@ -62,7 +77,11 @@ class HashChainLedger:
                 return False
             if entry.previous_hash != previous:
                 return False
-            if calculate_hash(entry.sequence, entry.previous_hash, entry.payload) != entry.entry_hash:
+            try:
+                recomputed = calculate_hash(entry.sequence, entry.previous_hash, entry.payload)
+            except (TypeError, ValueError):
+                return False
+            if recomputed != entry.entry_hash:
                 return False
             previous = entry.entry_hash
         if expected_head_hash is not None and previous != expected_head_hash:
