@@ -1090,6 +1090,15 @@ class SimulatedCustodyAuthority:
                 if stored is None:
                     raise CustodyIntegrityError("transaction journal receipt missing")
                 return stored
+            prior_rejection = conn.execute(
+                "SELECT 1 FROM journal_events WHERE transaction_id=? AND event_type='PREPARE_REJECTED' LIMIT 1",
+                (transaction_id,),
+            ).fetchone()
+            if prior_rejection is not None:
+                raise CustodyConflict(
+                    "TRANSACTION_ID_TERMINAL",
+                    "a transaction ID with a rejected initial prepare cannot be reused",
+                )
             try:
                 self._candidate_ordering(conn, candidate)
             except CustodyRejected as exc:
