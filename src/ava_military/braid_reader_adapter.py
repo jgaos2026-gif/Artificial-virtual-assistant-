@@ -10,7 +10,7 @@ from .braid_provenance import (
     ColdHistoryProvenanceClassifier, ColdSnapshot, AnchorBaseline,
     MonotonicCheckpoint, ProvenanceReport,
 )
-from .shared_cross_process_lock import CrossProcessAdvisoryLock
+from .shared_cross_process_lock import CrossProcessAdvisoryLock, lock_path_for
 
 
 @dataclass(frozen=True)
@@ -112,6 +112,9 @@ def read_braided_stream(
     lock = None
     if cold_log is not None:
         lock = getattr(cold_log, "_cross_process_lock", None)
+        if lock is None and getattr(cold_log, "lock_path", None) == lock_path_for(path):
+            # AnchoredColdLog uses this exact persistent .writer.lock path.
+            lock = CrossProcessAdvisoryLock(path)
         if lock is None:
             sync_guard = getattr(cold_log, "_exclusive_guard", None)
     elif sync_guard is None:
