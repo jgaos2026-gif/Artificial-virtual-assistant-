@@ -52,6 +52,8 @@ class VerificationOutcome(str, Enum):
     WRONG_STATUS = "WRONG_STATUS"
     UNKNOWN_AUTHORITY = "UNKNOWN_AUTHORITY"
     INVALID_CANONICALIZATION = "INVALID_CANONICALIZATION"
+    UNAUTHORIZED_KEY = "UNAUTHORIZED_KEY"
+    UNISSUED_RECEIPT = "UNISSUED_RECEIPT"
 
 
 class CustodyError(RuntimeError):
@@ -190,6 +192,8 @@ class VerificationResult:
     authenticated: bool = False
     lifecycle_status: str | None = None
     admission_ready: bool = False
+    issued: bool = False
+    signer_authorized: bool = False
 
 
 @dataclass(frozen=True)
@@ -555,6 +559,8 @@ class SimulatedCustodyAuthority:
         latest_tx_receipt: dict[str, CustodyReceipt] = {}
         tx_status: dict[str, str] = {}
         tx_prepared_payload: dict[str, dict[str, Any]] = {}
+        tx_lifecycle: dict[str, str] = {}
+        tx_state_receipt_id: dict[str, str] = {}
         latest_committed: dict[str, dict[str, Any]] = {}
         recovery_events: dict[str, tuple[sqlite3.Row, dict[str, Any], CustodyReceipt]] = {}
         consumed_recoveries: dict[str, str] = {}
@@ -603,25 +609,68 @@ class SimulatedCustodyAuthority:
                     raise CustodyIntegrityError("journal references a missing receipt-history record")
                 if receipt.transaction_id != txid:
                     raise CustodyIntegrityError("journal receipt transaction binding mismatch")
+                expected_receipt_epoch = epoch + 1 if event_type in ("AUTHORITY_KEY_REVOKED", "AUTHORITY_REVOKED") else epoch
+                if receipt.key_id != row["key_id"] or receipt.authority_epoch != expected_receipt_epoch:
+                    raise CustodyIntegrityError("journal receipt signer or authority epoch does not match its authenticated event")
                 expected_status = state_events.get(event_type)
                 if event_type == "COMMIT_REPLAY_REJECTED":
                     expected_status = ReceiptStatus.REJECTED.value
                 if expected_status is None or receipt.custody_state != expected_status:
                     raise CustodyIntegrityError("journal event lifecycle does not match signed receipt status")
                 referenced_receipts.add(receipt_id)
-                transaction_state_event = event_type in (
-                    "PREPARED", "COMMIT_REJECTED", "RESERVATION_EXPIRED",
-                    "COMMIT_EXPIRED", "COMMITTED",
-                )
-                if transaction_state_event and txid is not None:
-                    latest_tx_receipt[txid] = receipt
-                    tx_status[txid] = expected_status
-                if event_type == "PREPARED":
-                    tx_prepared_payload[txid] = payload
+                if event_type in ("PREPARED", "PREPARE_REJECTED", "COMMIT_REJECTED", "RESERVATION_EXPIRED", "COMMIT_EXPIRED", "COMMITTED", "COMMIT_REPLAY_REJECTED"):
+                    if not isinstance(txid, str) or not _ID.fullmatch(txid):
+                        raise CustodyIntegrityError("transaction lifecycle event has an invalid transaction ID")
+                    current_lifecycle = tx_lifecycle.get(txid)
+                    if event_type == "PREPARED":
+                        if current_lifecycle is not None:
+                            raise CustodyIntegrityError("transaction PREPARED event is duplicated or reopens a terminal lifecycle")
+                        tx_lifecycle[txid] = ReceiptStatus.PREPARED.value
+                        tx_prepared_payload[txid] = payload
+                        latest_tx_receipt[txid] = receipt
+                        tx_status[txid] = ReceiptStatus.PREPARED.value
+                        tx_state_receipt_id[txid] = receipt.receipt_id
+                    elif event_type == "PREPARE_REJECTED":
+                        if current_lifecycle is None:
+                            tx_lifecycle[txid] = ReceiptStatus.REJECTED.value
+                    elif event_type in ("COMMIT_REJECTED", "RESERVATION_EXPIRED", "COMMIT_EXPIRED", "COMMITTED"):
+                        if current_lifecycle != ReceiptStatus.PREPARED.value:
+                            raise CustodyIntegrityError(f"{event_type} requires exactly one prior PREPARED event")
+                        tx_lifecycle[txid] = expected_status
+                        latest_tx_receipt[txid] = receipt
+                        tx_status[txid] = expected_status
+                        tx_state_receipt_id[txid] = receipt.receipt_id
+                    elif event_type == "COMMIT_REPLAY_REJECTED":
+                        if current_lifecycle != ReceiptStatus.COMMITTED.value:
+                            raise CustodyIntegrityError("commit replay rejection is not auxiliary to a committed transaction")
+                        if payload.get("original_committed_receipt") != tx_state_receipt_id.get(txid):
+                            raise CustodyIntegrityError("commit replay rejection does not reference the original committed receipt")
                 if event_type == "RECOVERY_AUTHORIZED":
                     auth_id = payload.get("recovery_authorization_id")
                     if not isinstance(auth_id, str) or auth_id in recovery_events:
                         raise CustodyIntegrityError("duplicate or invalid recovery authorization event")
+                    stream_id = payload.get("stream_id")
+                    previous = latest_committed.get(stream_id) if isinstance(stream_id, str) else None
+                    if previous is None:
+                        raise CustodyIntegrityError("recovery authorization was issued before the stream had a committed floor")
+                    if (
+                        payload.get("previous_lineage_id") != previous["lineage_id"]
+                        or payload.get("previous_generation") != previous["generation"]
+                        or type(payload.get("target_generation")) is not int
+                        or payload["target_generation"] <= previous["generation"]
+                        or payload.get("target_lineage_id") == previous["lineage_id"]
+                        or payload.get("lineage_parent_id") != previous["lineage_id"]
+                        or receipt.operation != "authorize_recovery"
+                        or receipt.recovery_authorization_id != auth_id
+                        or receipt.stream_id != stream_id
+                        or receipt.previous_lineage_id != previous["lineage_id"]
+                        or receipt.lineage_id != payload.get("target_lineage_id")
+                        or receipt.lineage_parent_id != previous["lineage_id"]
+                        or receipt.previous_generation != previous["generation"]
+                        or receipt.target_generation != payload.get("target_generation")
+                        or receipt.previous_checkpoint_digest != previous["checkpoint_digest"]
+                    ):
+                        raise CustodyIntegrityError("recovery authorization does not bind the reconstructed floor at issuance")
                     recovery_events[auth_id] = (row, payload, receipt)
 
             elif event_type in state_events or event_type == "COMMIT_REPLAY_REJECTED":
@@ -1041,6 +1090,15 @@ class SimulatedCustodyAuthority:
                 if stored is None:
                     raise CustodyIntegrityError("transaction journal receipt missing")
                 return stored
+            prior_rejection = conn.execute(
+                "SELECT 1 FROM journal_events WHERE transaction_id=? AND event_type='PREPARE_REJECTED' LIMIT 1",
+                (transaction_id,),
+            ).fetchone()
+            if prior_rejection is not None:
+                raise CustodyConflict(
+                    "TRANSACTION_ID_TERMINAL",
+                    "a transaction ID with a rejected initial prepare cannot be reused",
+                )
             try:
                 self._candidate_ordering(conn, candidate)
             except CustodyRejected as exc:
@@ -1252,9 +1310,18 @@ class SimulatedCustodyAuthority:
             conn.close()
 
     def verify_floor_attestation(self, attestation: FloorAttestation) -> bool:
+        """Verify signature, current signer authority, and freshness against the current floor."""
         if not isinstance(attestation, FloorAttestation) or attestation.authority_id != self.authority_id:
             return False
-        if attestation.custody_mode != CUSTODY_MODE or attestation.key_id not in self._keys:
+        if (
+            attestation.custody_mode != CUSTODY_MODE
+            or attestation.signature_algorithm != "HMAC-SHA256-TEST-ONLY"
+            or attestation.key_id not in self._keys
+            or not hmac.compare_digest(
+                self._sign(self._keys[attestation.key_id], attestation.payload()),
+                attestation.signature,
+            )
+        ):
             return False
         conn = self._connect()
         try:
@@ -1263,11 +1330,23 @@ class SimulatedCustodyAuthority:
                 return False
             if int(self._meta_get(conn, "authority_epoch")) != attestation.authority_epoch:
                 return False
-            if conn.execute("SELECT 1 FROM revocations WHERE key_id=?", (attestation.key_id,)).fetchone():
+            if self._meta_get(conn, "active_key_id") != attestation.key_id:
                 return False
+            revoked = tuple(r["key_id"] for r in conn.execute("SELECT key_id FROM revocations ORDER BY key_id"))
+            if attestation.revoked_key_ids != revoked:
+                return False
+            floor = conn.execute("SELECT * FROM floors WHERE stream_id=?", (attestation.stream_id,)).fetchone()
+            expected = {
+                "lineage_id": floor["lineage_id"] if floor else None,
+                "generation": floor["generation"] if floor else None,
+                "sequence_no": floor["sequence_no"] if floor else None,
+                "checkpoint_digest": floor["checkpoint_digest"] if floor else None,
+                "previous_checkpoint_digest": floor["previous_checkpoint_digest"] if floor else None,
+                "receipt_id": floor["receipt_id"] if floor else None,
+            }
+            return all(getattr(attestation, field) == value for field, value in expected.items())
         finally:
             conn.close()
-        return hmac.compare_digest(self._sign(self._keys[attestation.key_id], attestation.payload()), attestation.signature)
 
     def verify_receipt(
         self, receipt: CustodyReceipt | Mapping[str, Any], *,
@@ -1288,39 +1367,67 @@ class SimulatedCustodyAuthority:
         if not self._verify_signature_only(item):
             return VerificationResult(VerificationOutcome.INVALID_SIGNATURE, False, CUSTODY_MODE, "receipt signature invalid")
 
-        def authenticated_result(outcome: VerificationOutcome, valid: bool, reason: str) -> VerificationResult:
+        def authenticated_result(
+            outcome: VerificationOutcome, valid: bool, reason: str, *,
+            issued: bool = False, signer_authorized: bool = False,
+        ) -> VerificationResult:
             return VerificationResult(
                 outcome, valid, CUSTODY_MODE, reason,
                 authenticated=True, lifecycle_status=item.custody_state,
-                admission_ready=False,
+                admission_ready=False, issued=issued,
+                signer_authorized=signer_authorized,
             )
 
         conn = self._connect()
         try:
             self._verify_state(conn)
+            history_row = conn.execute(
+                "SELECT receipt_json FROM receipts WHERE receipt_id=?", (item.receipt_id,)
+            ).fetchone()
+            issued = history_row is not None and self._decode_receipt(history_row["receipt_json"]) == item
             if conn.execute("SELECT 1 FROM revocations WHERE key_id=?", (item.key_id,)).fetchone():
-                return authenticated_result(VerificationOutcome.REVOKED_KEY, False, "receipt signature is authentic but its signing key is revoked")
+                return authenticated_result(
+                    VerificationOutcome.REVOKED_KEY, False,
+                    "receipt signature is authentic; signing key is revoked",
+                    issued=issued,
+                )
+            active_key_id = self._meta_get(conn, "active_key_id")
+            if item.key_id != active_key_id:
+                return authenticated_result(
+                    VerificationOutcome.UNAUTHORIZED_KEY, False,
+                    "receipt signature is authentic but signer is not active for this authority epoch",
+                    issued=issued,
+                )
             epoch = int(self._meta_get(conn, "authority_epoch"))
             if item.authority_epoch != epoch:
-                return authenticated_result(VerificationOutcome.STALE_EPOCH, False, "receipt signature is authentic but its authority epoch is stale")
+                return authenticated_result(
+                    VerificationOutcome.STALE_EPOCH, False,
+                    "receipt signature is authentic but authority epoch is stale",
+                    issued=issued,
+                )
+            if not issued:
+                return authenticated_result(
+                    VerificationOutcome.UNISSUED_RECEIPT, False,
+                    "receipt signature is authentic but no matching custody issuance record exists",
+                )
         except CustodyError:
             raise
         finally:
             conn.close()
         if item.lease_expires_at is not None and item.custody_state in (ReceiptStatus.PREPARED.value, ReceiptStatus.RECOVERY_AUTHORIZED.value):
             if self._now() >= item.lease_expires_at:
-                return authenticated_result(VerificationOutcome.EXPIRED, False, "receipt is authentic but its reservation lease expired")
+                return authenticated_result(VerificationOutcome.EXPIRED, False, "receipt is authentic and issued but its reservation lease expired", issued=True, signer_authorized=True)
         if expected_operation is not None and item.operation != expected_operation:
-            return authenticated_result(VerificationOutcome.WRONG_SCOPE, False, "receipt is authentic but operation scope does not match")
+            return authenticated_result(VerificationOutcome.WRONG_SCOPE, False, "receipt is authentic and issued but operation scope does not match", issued=True, signer_authorized=True)
         if expected_scope:
             for field, expected in expected_scope.items():
                 if getattr(item, field, object()) != expected:
-                    return authenticated_result(VerificationOutcome.WRONG_SCOPE, False, f"receipt is authentic but {field} scope does not match")
+                    return authenticated_result(VerificationOutcome.WRONG_SCOPE, False, f"receipt is authentic and issued but {field} scope does not match", issued=True, signer_authorized=True)
         if expected_status is not None:
             status = expected_status.value if isinstance(expected_status, ReceiptStatus) else str(expected_status)
             if item.custody_state != status:
-                return authenticated_result(VerificationOutcome.WRONG_STATUS, False, "receipt is authentic but lifecycle status does not match the requested status")
-        return authenticated_result(VerificationOutcome.VALID, True, f"receipt is authentic; lifecycle={item.custody_state}; admission_ready=false")
+                return authenticated_result(VerificationOutcome.WRONG_STATUS, False, "receipt is authentic and issued but lifecycle status does not match the requested status", issued=True, signer_authorized=True)
+        return authenticated_result(VerificationOutcome.VALID, True, f"receipt is authentic and issued; lifecycle={item.custody_state}; admission_ready=false", issued=True, signer_authorized=True)
 
     def authorize_recovery(
         self, *, stream_id: str, previous_lineage_id: str, target_lineage_id: str,
@@ -1329,6 +1436,8 @@ class SimulatedCustodyAuthority:
     ) -> CustodyReceipt:
         if not authorization_proof or not isinstance(authorization_proof, str):
             raise CustodyRejected("NO_RECOVERY_AUTH", "explicit recovery authorization proof is required")
+        if lineage_parent_id != previous_lineage_id or target_lineage_id == previous_lineage_id:
+            raise CustodyRejected("WRONG_LINEAGE_PARENT", "new lineage parent must be the currently authorized previous lineage")
         if target_generation <= previous_generation:
             raise CustodyRejected("NON_MONOTONIC_GENERATION", "target generation must exceed previous generation")
         txid = transaction_id or f"recovery:{uuid.uuid4()}"
@@ -1357,7 +1466,8 @@ class SimulatedCustodyAuthority:
                 "recovery_authorization_id": auth_id, "stream_id": stream_id,
                 "previous_lineage_id": previous_lineage_id, "target_lineage_id": target_lineage_id,
                 "lineage_parent_id": lineage_parent_id, "previous_generation": previous_generation,
-                "target_generation": target_generation, "authorization_proof_digest": sha256_hex(authorization_proof.encode()),
+                "target_generation": target_generation, "previous_checkpoint_digest": floor["checkpoint_digest"],
+                "authorization_proof_digest": sha256_hex(authorization_proof.encode()),
                 "receipt_id": receipt.receipt_id,
             })
             self._fault("authorize_recovery.before_atomic_commit")

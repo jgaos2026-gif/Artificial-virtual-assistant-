@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import sqlite3
+from dataclasses import replace
 
 import pytest
 
@@ -12,6 +13,42 @@ from ava_military.custody_authority import (
 )
 
 KEYS = {"key-a": b"A" * 32, "key-b": b"B" * 32}
+
+
+def _rechain_events_in_order(auth, event_types):
+    import hmac
+
+    conn = sqlite3.connect(auth.path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM journal_events ORDER BY event_no").fetchall()
+    by_type = {row["event_type"]: row for row in rows}
+    assert set(event_types) == set(by_type)
+    conn.execute("UPDATE journal_events SET event_no=event_no+10000")
+    previous = "0" * 64
+    for new_no, event_type in enumerate(event_types, start=1):
+        row = by_type[event_type]
+        body = {
+            "event_type": row["event_type"],
+            "transaction_id": row["transaction_id"],
+            "payload_json": row["payload_json"],
+            "previous_hash": previous,
+            "key_id": row["key_id"],
+        }
+        event_hash = sha256_hex(canonical(body))
+        mac = hmac.new(
+            KEYS[row["key_id"]],
+            canonical({**body, "event_hash": event_hash}),
+            hashlib.sha256,
+        ).hexdigest()
+        conn.execute(
+            "UPDATE journal_events SET event_no=?,previous_hash=?,event_hash=?,mac=? WHERE event_no=?",
+            (new_no, previous, event_hash, mac, row["event_no"] + 10000),
+        )
+        previous = event_hash
+    conn.execute("UPDATE meta SET value=? WHERE key='event_head'", (previous,))
+    conn.execute("UPDATE sqlite_sequence SET seq=? WHERE name='journal_events'", (len(rows),))
+    conn.commit()
+    conn.close()
 
 
 class Clock:
@@ -746,4 +783,226 @@ def test_authenticated_unknown_journal_event_type_is_rejected(tmp_path):
     conn.close()
     with pytest.raises(CustodyIntegrityError, match="unknown event type"):
         auth.read_floor("stream-1")
+
+def test_floor_attestation_is_rejected_after_floor_advances(tmp_path):
+    auth = make_authority(tmp_path)
+    _, first = prepare_commit(auth)
+    old_attestation = auth.read_floor("stream-1")
+    second_candidate = candidate(
+        b"checkpoint-1", seq=1, previous=first.checkpoint_digest,
+    )
+    prepare_commit(auth, b"checkpoint-1", tx="second-floor", cand=second_candidate)
+    assert not auth.verify_floor_attestation(old_attestation)
+    assert auth.verify_floor_attestation(auth.read_floor("stream-1"))
+
+
+def test_floor_attestation_signed_by_inactive_key_is_rejected(tmp_path):
+    auth = make_authority(tmp_path)
+    prepare_commit(auth)
+    attestation = auth.read_floor("stream-1")
+    inactive = replace(attestation, key_id="key-b", signature="")
+    inactive = replace(inactive, signature=auth._sign(KEYS["key-b"], inactive.payload()))
+    assert not auth.verify_floor_attestation(inactive)
+
+
+def test_receipt_verification_distinguishes_unissued_and_inactive_signers(tmp_path):
+    auth = make_authority(tmp_path)
+    _, committed = prepare_commit(auth)
+
+    unissued = replace(committed, receipt_id="unissued-receipt-id", signature="")
+    unissued = replace(unissued, signature=auth._sign(KEYS["key-a"], unissued.payload()))
+    unissued_result = auth.verify_receipt(unissued)
+    assert unissued_result.outcome == VerificationOutcome.UNISSUED_RECEIPT
+    assert unissued_result.authenticated
+    assert not unissued_result.issued
+    assert not unissued_result.signer_authorized
+
+    inactive = replace(
+        committed, receipt_id="inactive-key-receipt-id",
+        key_id="key-b", signature="",
+    )
+    inactive = replace(inactive, signature=auth._sign(KEYS["key-b"], inactive.payload()))
+    inactive_result = auth.verify_receipt(inactive)
+    assert inactive_result.outcome == VerificationOutcome.UNAUTHORIZED_KEY
+    assert inactive_result.authenticated
+    assert not inactive_result.issued
+    assert not inactive_result.signer_authorized
+
+    issued_result = auth.verify_receipt(committed)
+    assert issued_result.valid and issued_result.authenticated
+    assert issued_result.issued and issued_result.signer_authorized
+    assert not issued_result.admission_ready
+
+
+def test_authenticated_journal_cannot_reorder_prepared_after_committed(tmp_path):
+    auth = make_authority(tmp_path)
+    prepare_commit(auth)
+    _rechain_events_in_order(auth, ["COMMITTED", "PREPARED"])
+    with pytest.raises(CustodyIntegrityError, match="requires exactly one prior PREPARED"):
+        auth.read_floor("stream-1")
+
+
+def test_duplicate_prepared_lifecycle_event_is_rejected(tmp_path):
+    auth = make_authority(tmp_path)
+    prepared = auth.prepare(candidate(), "duplicate-prepared")
+    duplicate = replace(prepared, receipt_id="second-prepared-receipt", signature="")
+    duplicate = replace(duplicate, signature=auth._sign(KEYS["key-a"], duplicate.payload()))
+    conn = sqlite3.connect(auth.path)
+    conn.execute(
+        "INSERT INTO receipts(receipt_id,transaction_id,custody_state,receipt_json) VALUES(?,?,?,?)",
+        (duplicate.receipt_id, duplicate.transaction_id, duplicate.custody_state,
+         canonical(duplicate.as_dict()).decode()),
+    )
+    row = conn.execute(
+        "SELECT payload_json FROM journal_events WHERE event_type='PREPARED' AND transaction_id=?",
+        ("duplicate-prepared",),
+    ).fetchone()
+    payload = json.loads(row[0])
+    payload["receipt_id"] = duplicate.receipt_id
+    previous = conn.execute(
+        "SELECT event_hash FROM journal_events ORDER BY event_no DESC LIMIT 1"
+    ).fetchone()[0]
+    import hmac
+    payload_json = canonical(payload).decode()
+    body = {
+        "event_type": "PREPARED", "transaction_id": "duplicate-prepared",
+        "payload_json": payload_json, "previous_hash": previous, "key_id": "key-a",
+    }
+    event_hash = sha256_hex(canonical(body))
+    mac = hmac.new(KEYS["key-a"], canonical({**body, "event_hash": event_hash}), hashlib.sha256).hexdigest()
+    conn.execute(
+        "INSERT INTO journal_events(event_type,transaction_id,payload_json,previous_hash,event_hash,key_id,mac) VALUES(?,?,?,?,?,?,?)",
+        ("PREPARED", "duplicate-prepared", payload_json, previous, event_hash, "key-a", mac),
+    )
+    conn.execute("UPDATE meta SET value=? WHERE key='event_head'", (event_hash,))
+    conn.commit()
+    conn.close()
+    with pytest.raises(CustodyIntegrityError, match="duplicated or reopens"):
+        auth.read_floor("stream-1")
+
+
+def test_recovery_authorization_must_follow_matching_committed_floor(tmp_path):
+    auth = make_authority(tmp_path)
+    _, first = prepare_commit(auth)
+    auth.authorize_recovery(
+        stream_id="stream-1", previous_lineage_id="lineage-0",
+        target_lineage_id="lineage-1", lineage_parent_id="lineage-0",
+        previous_generation=0, target_generation=1,
+        authorization_proof="owner quorum",
+    )
+    _rechain_events_in_order(auth, ["RECOVERY_AUTHORIZED", "PREPARED", "COMMITTED"])
+    with pytest.raises(CustodyIntegrityError, match="before the stream had a committed floor"):
+        auth.read_floor("stream-1")
+
+
+def test_recovery_supports_two_sequential_lineage_transitions(tmp_path):
+    auth = make_authority(tmp_path)
+    _, first = prepare_commit(auth)
+    auth1 = auth.authorize_recovery(
+        stream_id="stream-1", previous_lineage_id="lineage-0",
+        target_lineage_id="lineage-1", lineage_parent_id="lineage-0",
+        previous_generation=0, target_generation=1, authorization_proof="approval-1",
+    )
+    cand1 = candidate(
+        b"generation-1", seq=0, previous=first.checkpoint_digest,
+        generation=1, lineage="lineage-1", recovery=auth1.recovery_authorization_id,
+        previous_lineage="lineage-0", parent="lineage-0",
+        previous_generation=0, target_generation=1,
+    )
+    _, committed1 = prepare_commit(auth, b"generation-1", tx="recovery-one", cand=cand1)
+    auth2 = auth.authorize_recovery(
+        stream_id="stream-1", previous_lineage_id="lineage-1",
+        target_lineage_id="lineage-2", lineage_parent_id="lineage-1",
+        previous_generation=1, target_generation=2, authorization_proof="approval-2",
+    )
+    cand2 = candidate(
+        b"generation-2", seq=0, previous=committed1.checkpoint_digest,
+        generation=2, lineage="lineage-2", recovery=auth2.recovery_authorization_id,
+        previous_lineage="lineage-1", parent="lineage-1",
+        previous_generation=1, target_generation=2,
+    )
+    _, committed2 = prepare_commit(auth, b"generation-2", tx="recovery-two", cand=cand2)
+    floor = auth.read_floor("stream-1")
+    assert floor.lineage_id == "lineage-2"
+    assert floor.generation == 2
+    assert floor.checkpoint_digest == committed2.checkpoint_digest
+
+
+def test_recovery_authorization_cannot_cross_stream_or_be_reused(tmp_path):
+    auth = make_authority(tmp_path)
+    _, first = prepare_commit(auth)
+    authorization = auth.authorize_recovery(
+        stream_id="stream-1", previous_lineage_id="lineage-0",
+        target_lineage_id="lineage-1", lineage_parent_id="lineage-0",
+        previous_generation=0, target_generation=1, authorization_proof="owner approval",
+    )
+    wrong_stream = candidate(
+        b"wrong-stream", generation=1, lineage="lineage-1",
+        recovery=authorization.recovery_authorization_id,
+        previous_lineage="lineage-0", parent="lineage-0",
+        previous_generation=0, target_generation=1,
+    )
+    wrong_stream = replace(wrong_stream, stream_id="stream-2")
+    rejected = auth.prepare(wrong_stream, "cross-stream-recovery")
+    assert rejected.custody_state == ReceiptStatus.REJECTED.value
+
+    valid = candidate(
+        b"generation-1", seq=0, previous=first.checkpoint_digest,
+        generation=1, lineage="lineage-1", recovery=authorization.recovery_authorization_id,
+        previous_lineage="lineage-0", parent="lineage-0",
+        previous_generation=0, target_generation=1,
+    )
+    _, committed = prepare_commit(auth, b"generation-1", tx="consume-recovery", cand=valid)
+    reused = candidate(
+        b"generation-2", seq=0, previous=committed.checkpoint_digest,
+        generation=2, lineage="lineage-2", recovery=authorization.recovery_authorization_id,
+        previous_lineage="lineage-1", parent="lineage-1",
+        previous_generation=1, target_generation=2,
+    )
+    reused_result = auth.prepare(reused, "reuse-recovery")
+    assert reused_result.custody_state == ReceiptStatus.REJECTED.value
+
+
+def test_recovery_rejects_unrelated_lineage_parent(tmp_path):
+    auth = make_authority(tmp_path)
+    prepare_commit(auth)
+    with pytest.raises(CustodyRejected, match="WRONG_LINEAGE_PARENT"):
+        auth.authorize_recovery(
+            stream_id="stream-1", previous_lineage_id="lineage-0",
+            target_lineage_id="lineage-1", lineage_parent_id="unrelated-parent",
+            previous_generation=0, target_generation=1,
+            authorization_proof="owner approval",
+        )
+
+
+def test_revoked_key_cannot_be_reactivated_after_multiple_epoch_changes(tmp_path):
+    keys = {"key-a": b"A" * 32, "key-b": b"B" * 32, "key-c": b"C" * 32}
+    auth = SimulatedCustodyAuthority(
+        tmp_path / "multi-key.sqlite3", authority_id="test-custody",
+        keys=keys, active_key_id="key-a", clock=Clock(),
+    )
+    prepare_commit(auth)
+    auth.revoke_authority(
+        target_key_id="key-a", new_authority_epoch=1, reason="rotate a to b",
+        authorization_proof="recorded owner proof", next_active_key_id="key-b",
+    )
+    auth.revoke_authority(
+        target_key_id="key-b", new_authority_epoch=2, reason="rotate b to c",
+        authorization_proof="recorded owner proof", next_active_key_id="key-c",
+    )
+    assert auth.read_floor("stream-1").authority_epoch == 2
+    with pytest.raises(CustodyRejected, match="REVOKED_KEY"):
+        auth.revoke_authority(
+            target_key_id="key-c", new_authority_epoch=3, reason="attempt key resurrection",
+            authorization_proof="recorded owner proof", next_active_key_id="key-a",
+        )
+    assert auth.read_floor("stream-1").key_id == "key-c"
+
+
+def test_rejected_initial_prepare_transaction_id_cannot_be_reused(tmp_path):
+    auth = make_authority(tmp_path)
+    rejected = auth.prepare(candidate(generation=1), "terminal-rejected-id")
+    assert rejected.custody_state == ReceiptStatus.REJECTED.value
+    with pytest.raises(CustodyConflict, match="TRANSACTION_ID_TERMINAL"):
+        auth.prepare(candidate(), "terminal-rejected-id")
 
