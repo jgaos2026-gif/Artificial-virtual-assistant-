@@ -40,9 +40,10 @@ A position row represents an active PREPARED reservation or a committed position
 - `authenticated`: the supplied receipt's signature is cryptographically valid;
 - `issued`: the exact receipt is present in the custody receipt history and is linked by the verified journal;
 - `signer_authorized`: the receipt signer is the currently active key for the current authority epoch;
+- `reservation_active`: true only when a PREPARED receipt is still the transaction's latest lifecycle receipt and its lease remains live;
 - `admission_ready`: always false in this simulator; no AVA admission decision is made here.
 
-An authentic receipt signed by an inactive or revoked key, an old epoch, or a key not authorized for the current authority state is not a currently valid custody receipt. An authentic but unissued receipt is not treated as an authority-issued receipt. These checks still do not make a COMMITTED receipt sufficient for memory admission.
+An authentic receipt signed by an inactive or revoked key, an old epoch, or a key not authorized for the current authority state is not a currently valid custody receipt. An authentic but unissued receipt is not treated as an authority-issued receipt. A PREPARED receipt is checked against the transaction's latest lifecycle state: only the exact latest PREPARED receipt with an unexpired lease reports `reservation_active=true`; after COMMITTED, EXPIRED, or REJECTED, the old PREPARED receipt remains authentic history but reports `reservation_active=false` and cannot pass an `expected_status=PREPARED` check. A recovery authorization is current only while its exact source stream, lineage, generation, and previous checkpoint digest still match the reconstructed floor; an unconsumed authorization becomes `STALE_FLOOR` after that floor advances. These checks still do not make a COMMITTED receipt sufficient for memory admission.
 
 ## Journal lifecycle and recovery issuance rules
 
@@ -92,10 +93,12 @@ For committed checkpoint receipts, verification compares the exact receipt ident
 
 - `AUTHENTIC_CURRENT`: authenticated, issued, current-epoch signer, and exact match to the current reconstructed floor.
 - `AUTHENTIC_HISTORICAL`: authenticated and issued, but a later committed floor supersedes this checkpoint. It remains historical evidence only; `admission_ready` is always false.
-- `STALE_FLOOR`: returned when `require_current=True` and an otherwise authentic, issued checkpoint receipt has been superseded.
-- `REVOKED_KEY`, `STALE_EPOCH`, and `UNISSUED_RECEIPT` remain distinct outcomes. A consumed recovery authorization returns `CONSUMED_AUTHORIZATION`.
+- `STALE_FLOOR`: returned when `require_current=True` and an otherwise authentic, issued committed checkpoint receipt has been superseded. It is also returned for an unconsumed recovery authorization whose source floor no longer matches the reconstructed current floor.
+- `RESERVATION_NOT_ACTIVE`: a PREPARED receipt is authentic and issued, but its transaction has since reached another lifecycle state. The receipt is historical evidence, not a live reservation.
+- `reservation_active`: a separate result field that is true only for the exact latest PREPARED transaction receipt with a lease that has not expired.
+- `CONSUMED_AUTHORIZATION`: the recovery authorization was consumed by a committed transition. `REVOKED_KEY`, `STALE_EPOCH`, and `UNISSUED_RECEIPT` remain distinct outcomes.
 
-`require_current` is an explicit caller request. It does not turn this simulator into AVA's admission gate. No SIMULATED_CUSTODY outcome sets `admission_ready=True`.
+`require_current` applies only to committed checkpoint receipts. Passing it with a PREPARED, RECOVERY_AUTHORIZED, REJECTED, or EXPIRED receipt returns `WRONG_STATUS` (or the more specific `EXPIRED` / `CONSUMED_AUTHORIZATION` result when those conditions are detected first). It does not turn this simulator into AVA's admission gate. No SIMULATED_CUSTODY outcome sets `admission_ready=True`.
 
 ## Combined transition and adversarial test evidence
 
