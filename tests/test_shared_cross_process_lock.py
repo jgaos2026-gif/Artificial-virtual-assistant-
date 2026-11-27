@@ -61,7 +61,7 @@ def test_lock_timeout_fails_closed_when_another_process_holds_lock(tmp_path):
     started = ctx.Event()
     result = ctx.Queue()
     proc = ctx.Process(target=_timeout_worker, args=(str(target), started, result))
-    with CrossProcessAdvisoryLock(target):
+    with CrossProcessAdvisoryLock(target).exclusive():
         proc.start()
         assert started.wait(5), "timeout worker did not start"
         assert result.get(timeout=5) == "timeout"
