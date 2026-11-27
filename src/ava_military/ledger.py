@@ -63,7 +63,8 @@ class HashChainLedger:
             raise ValueError("payload does not survive canonical JSON round-trip")
         entry = LedgerEntry(sequence, previous, stored, digest)
         self._entries.append(entry)
-        return entry
+        # append() must not leak the internal entry through its return value.
+        return LedgerEntry(sequence, previous, copy.deepcopy(stored), digest)
 
     @staticmethod
     def verify(
