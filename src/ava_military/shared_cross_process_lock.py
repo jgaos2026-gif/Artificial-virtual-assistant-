@@ -79,7 +79,7 @@ class CrossProcessAdvisoryLock:
                             acquired = True
                             break
                         except OSError as exc:
-                            if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK, None):
+                            if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
                                 raise
                             if deadline is not None and time.monotonic() >= deadline:
                                 raise CrossProcessLockTimeout(
@@ -102,13 +102,16 @@ class CrossProcessAdvisoryLock:
                                     f"timed out acquiring lock {self.path}"
                                 ) from exc
                             time.sleep(self.poll_interval)
-                yield
             except CrossProcessLockError:
                 raise
             except OSError as exc:
                 raise CrossProcessLockError(
                     f"lock acquisition failed for {self.path}: {exc}"
                 ) from exc
+
+            # Keep caller work outside the acquisition exception handler so an
+            # OSError raised by the protected operation is not misclassified.
+            yield
         finally:
             try:
                 if acquired:
