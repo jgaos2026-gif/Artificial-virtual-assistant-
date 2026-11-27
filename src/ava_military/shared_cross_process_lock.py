@@ -1,13 +1,14 @@
-"""Same-host advisory file lock shared by COLD readers and writers.
+"""Same-host advisory lock compatible with AnchoredColdLog's writer lock.
 
-All cooperating processes derive identity with lock_path_for(). Never unlink or
-replace the lock file while users may hold it. This is not a distributed lock
-and cannot stop a writer that bypasses the protocol.
+The canonical path deliberately matches anchor.py:
+Path(target).with_name(Path(target).name + ".writer.lock").
+Do not unlink or replace this lock file while processes may hold it.
+This is advisory same-host coordination, not distributed locking or mandatory
+access control against writers that bypass the protocol.
 """
 from __future__ import annotations
 
 from contextlib import contextmanager
-import hashlib
 import os
 from pathlib import Path
 from typing import Iterator
@@ -18,36 +19,37 @@ class CrossProcessLockError(RuntimeError):
 
 
 def lock_path_for(target_path: os.PathLike[str] | str) -> Path:
-    target = Path(target_path).resolve(strict=False)
-    digest = hashlib.sha256(os.fsencode(str(target))).hexdigest()
-    return target.parent / f".{target.name}.{digest[:24]}.lock"
+    target = Path(target_path)
+    return target.with_name(target.name + ".writer.lock")
 
 
 class CrossProcessAdvisoryLock:
-    """Exclusive advisory lock whose identity is derived from the resource path."""
+    """Exclusive lock using the exact lock-file identity used by AnchoredColdLog."""
 
     def __init__(self, target_path: os.PathLike[str] | str) -> None:
-        self.target_path = Path(target_path).resolve(strict=False)
+        self.target_path = Path(target_path)
         self.path = lock_path_for(self.target_path)
 
     @contextmanager
     def exclusive(self) -> Iterator[None]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
-        fd = os.open(self.path, flags, 0o600)
+        # Match AnchoredColdLog's a+b lock-file creation and byte-range semantics.
+        handle = self.path.open("a+b")
         acquired = False
         try:
             try:
                 if os.name == "nt":
                     import msvcrt
-                    if os.fstat(fd).st_size == 0:
-                        os.write(fd, b"\0")
-                        os.fsync(fd)
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    handle.seek(0)
+                    if handle.read(1) == b"":
+                        handle.write(b"0")
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
                 else:
                     import fcntl
-                    fcntl.flock(fd, fcntl.LOCK_EX)
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
                 acquired = True
             except OSError as exc:
                 raise CrossProcessLockError(f"lock acquisition failed for {self.path}: {exc}") from exc
@@ -58,12 +60,12 @@ class CrossProcessAdvisoryLock:
                     try:
                         if os.name == "nt":
                             import msvcrt
-                            os.lseek(fd, 0, os.SEEK_SET)
-                            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                            handle.seek(0)
+                            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
                         else:
                             import fcntl
-                            fcntl.flock(fd, fcntl.LOCK_UN)
+                            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                     except OSError as exc:
                         raise CrossProcessLockError(f"lock release failed for {self.path}: {exc}") from exc
             finally:
-                os.close(fd)
+                handle.close()
