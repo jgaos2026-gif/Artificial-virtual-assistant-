@@ -80,3 +80,11 @@ def test_hashes_for_valid_payloads_are_unchanged():
     body = {"sequence": 0, "previous_hash": "0" * 64, "payload": payload}
     legacy = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
     assert HashChainLedger().append(payload).entry_hash == legacy
+
+
+def test_mutating_append_return_value_cannot_alter_history():
+    ledger = HashChainLedger()
+    returned = ledger.append({"nested": {"value": 1}})
+    returned.payload["nested"]["value"] = 2
+    assert ledger.entries[0].payload == {"nested": {"value": 1}}
+    assert HashChainLedger.verify(ledger.entries)
