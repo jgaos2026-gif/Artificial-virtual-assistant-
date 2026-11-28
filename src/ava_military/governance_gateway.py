@@ -1,9 +1,10 @@
 """Runtime binding adapter for the existing pure governance policy primitive.
 
 This module binds a versioned policy descriptor to an operating mode and
-delegates authorization decisions to ava_military.governance.
-It does not authenticate actors, protect policy storage, or create durable
-decision receipts; those integrations remain separate acceptance gates.
+delegates authorization decisions to ava_military.governance. It can append
+bounded local decision receipts, but it does not authenticate actors, protect
+policy storage, provide an external monotonic anchor, or authorize side effects.
+Those integrations remain separate acceptance gates.
 """
 from __future__ import annotations
 
@@ -12,6 +13,8 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any
+
+from .decision_receipts import DecisionReceipt, DecisionReceiptError, DecisionReceiptLog
 
 from .governance import (
     ActionClass,
@@ -56,6 +59,14 @@ class BoundAuthorizationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class RecordedAuthorizationResult:
+    """A policy result returned only after its receipt is durable."""
+
+    authorization: BoundAuthorizationResult
+    receipt: DecisionReceipt
+
+
+@dataclass(frozen=True, slots=True)
 class GovernanceGateway:
     """Immutable policy binding for one runtime instance."""
 
@@ -82,6 +93,61 @@ class GovernanceGateway:
             policy_version=self.policy_version,
             policy_digest=self.policy_digest,
         )
+
+
+    def authorize_with_receipt(
+        self,
+        context: AuthorityContext | None,
+        capability: str,
+        required_scope: str,
+        *,
+        request_id: str,
+        receipt_log: DecisionReceiptLog,
+    ) -> RecordedAuthorizationResult:
+        """Evaluate and durably record a decision before returning it.
+
+        The supplied AuthorityContext is recorded as caller-provided context.
+        This method does NOT authenticate that context or prove approval
+        authenticity. A caller must obtain context through a separately
+        authenticated authority boundary. If receipt persistence fails, this
+        method raises and returns no authorization result.
+        """
+        if (
+            not isinstance(request_id, str)
+            or not request_id.strip()
+            or len(request_id) > 128
+        ):
+            raise ValueError("request_id must be a non-empty string of at most 128 characters")
+
+        result = self.authorize(context, capability, required_scope)
+        supplied_context = None
+        if context is not None:
+            supplied_context = {
+                "actor_id": context.actor_id,
+                "authenticated_claim": context.authenticated,
+                "scope": context.scope,
+                "mode": getattr(context.mode, "value", context.mode),
+                "action_class": getattr(context.action_class, "value", context.action_class),
+                "human_approval_claim": context.human_approval,
+            }
+        payload = {
+            "event_type": "GOVERNANCE_DECISION",
+            "request_id": request_id.strip(),
+            "policy_version": self.policy_version,
+            "policy_digest": self.policy_digest,
+            "capability": capability,
+            "required_scope": required_scope,
+            "supplied_authority_context": supplied_context,
+            "decision": result.decision.value,
+            "reason": result.reason,
+        }
+        try:
+            receipt = receipt_log.append(payload)
+        except Exception as exc:
+            raise DecisionReceiptError(
+                "decision receipt could not be durably appended; do not execute request"
+            ) from exc
+        return RecordedAuthorizationResult(authorization=result, receipt=receipt)
 
     @staticmethod
     def require_allow(result: BoundAuthorizationResult) -> None:
@@ -181,5 +247,6 @@ __all__ = [
     "GovernanceGateway",
     "Mode",
     "PolicyBindingError",
+    "RecordedAuthorizationResult",
     "bind_policy",
 ]
