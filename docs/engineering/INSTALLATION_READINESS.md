@@ -2,8 +2,8 @@
 
 **Assessment date:** 2026-11-27  
 **Repository:** jgaos2026-gif/Artificial-virtual-assistant-  
-**Assessed main commit:** 373b7c8583b34fca06f1dd2966ea50ffb1242821  
-**Current CI:** GitHub Actions run [#199](https://github.com/jgaos2026-gif/Artificial-virtual-assistant-/actions/runs/46082805529), success; 98 tests passed, including bare pytest collection before editable installation.
+**Assessed main commit:** 54450eb578456f666bf7e54bb1eb397c86f92d9f  
+**Current CI:** GitHub Actions run [#239](https://github.com/jgaos2026-gif/Artificial-virtual-assistant-/actions/runs/46095339261), success; 101 tests passed on each of Windows and Ubuntu, including foundation-installer smoke tests.
 
 ## 1. Executive assessment
 
