@@ -14,13 +14,13 @@ From the repository root in PowerShell:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-.\\scripts\\install.ps1
+.\scripts\install.ps1
 ```
 
 Optional explicit paths:
 
 ```powershell
-.\\scripts\\install.ps1 -Source "C:\\Users\\JaysG\\JGA\\oasis" -Runtime "C:\\Users\\JaysG\\JGA\\OASIS-Research-Runtime"
+.\scripts\install.ps1 -Source "C:\Users\JaysG\JGA\oasis" -Runtime "C:\Users\JaysG\JGA\OASIS-Research-Runtime"
 ```
 
 ## Linux
@@ -34,7 +34,7 @@ bash scripts/install.sh "$HOME/JGA/OASIS-Research-Runtime"
 ## Read-only diagnostics
 
 ```powershell
-.\\.venv\\Scripts\\python.exe -m ava_military.doctor --source . --runtime "$env:USERPROFILE\\JGA\\OASIS-Research-Runtime"
+.\.venv\Scripts\python.exe -m ava_military.doctor --source . --runtime "$env:USERPROFILE\JGA\OASIS-Research-Runtime"
 ```
 
 The doctor reports package/environment facts only. It does not verify OS isolation, network policy, keys, witness independence, storage durability, backup restorability, or integrated OASIS behavior.
