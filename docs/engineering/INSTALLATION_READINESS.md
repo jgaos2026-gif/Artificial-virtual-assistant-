@@ -7,9 +7,9 @@
 
 ## 1. Executive assessment
 
-**Current classification: research-stage Python reference implementation with a limited local foundation installer on a work branch. Not an integrated AVA/OASIS runtime and not a hardened deployment.**
+**Current classification: research-stage Python reference implementation with a limited local foundation installer on main. Not an integrated AVA/OASIS runtime and not a hardened deployment.**
 
-The repository contains reference components for governance decisions, Clip Brick admission, COLD record handling, provenance classification, memory staging, and checkpoint/wake verification. A work branch adds Windows PowerShell and Linux shell scripts to install the Python research package into a separate runtime directory, plus a read-only package doctor. These scripts do not install or start AVA/OASIS services. Existing main-branch component-test evidence does not validate these new scripts.
+The repository contains reference components for governance decisions, Clip Brick admission, COLD record handling, provenance classification, memory staging, and checkpoint/wake verification. Main now includes Windows PowerShell and Linux shell scripts to install the Python research package into a separate runtime directory, plus a read-only package doctor. These scripts do not install or start AVA/OASIS services.
 
 It does not contain the integrated OASIS runtime, an NV012 document-grounded application, or an NV010 Linux-hardening tool. The eleven integrated acceptance tests remain NOT RUN. No operational, Navy, DoD, ATO, CUI, classified, or field-readiness claim is supported.
 
@@ -26,13 +26,13 @@ The intended constrained-node profile is **8 GB RAM and 1 TB storage**; this is 
 - GitHub Actions test workflow.
 - Merged fixes in PRs #13–#16: bare pytest import configuration and generated-file ignores; exact manifest binding for owner approval; ledger payload copy isolation and strict JSON number handling; and a total-byte budget for COLD reading.
 
-Main CI run #199 reports **98 passed** on the assessed commit. This is component/reference-kernel evidence only. It does not establish integrated runtime behavior.
+The latest validation run [#239](https://github.com/jgaos2026-gif/Artificial-virtual-assistant-/actions/runs/46095339261) passed **101 tests on Windows and 101 on Ubuntu**, including both foundation-installer smoke tests. This is component/reference-kernel and limited installer evidence only. It does not establish integrated runtime behavior.
 
 ## 3. Confirmed missing repository components
 
 The recursive main-branch inventory contains no:
 
-- Full AVA/OASIS Linux deployment installer, uninstaller, upgrade utility, rollback utility, or integrated runtime doctor. A limited Python foundation installer and read-only package doctor exist on a work branch; they do not close the full deployment gate.
+- Full AVA/OASIS deployment installer, uninstaller, upgrade utility, rollback utility, or integrated runtime doctor. The limited Python foundation installer and read-only package doctor do not close the full deployment gate.
 - Runtime entry point, service unit, API server, user interface, or OASIS lifecycle integration.
 - Local model adapter, inference runtime configuration, or end-to-end model-disconnection behavior.
 - NV012 document ingestion, indexing, retrieval, grounded-answer, citation-validation, and learner-evaluation application.
@@ -42,7 +42,7 @@ The recursive main-branch inventory contains no:
 - VS Code workspace configuration, tasks, launch profiles, or development-container configuration.
 - Backup/restore scripts, backup format, retention policy, key-recovery procedure, or restore-drill evidence.
 - Runtime dependency lockfile, SBOM generation, signed release artifact, release workflow, or published installation package.
-- SECURITY.md, CODEOWNERS, or Dependabot configuration on main. These metadata files have been added on a work branch but are not merged.
+- Signed release, SBOM generation, provenance attestations, release publication, automated dependency/static/secret scanning, and branch-protection enforcement.
 
 The project metadata declares no runtime dependencies. The repository is public, has no GitHub release, no license file, and no configured branch ruleset. The main branch is currently unprotected. The workflow runs tests but does not yet build and verify a release artifact, build a container, scan dependencies, generate an SBOM, or perform static security analysis.
 
@@ -133,15 +133,15 @@ Do not label the build “ready to install” until all of the following are tru
 Passing this gate would support a **hardened, unclassified research installation** within its declared scope. It would not establish Navy/DoD approval, ATO, CUI authorization, certification, or operational readiness.
 
 
-## 9. Work-branch update — 2026-11-27
+## 9. Merged main update — 2026-11-27
 
-Branch `work/ava-local-research-install-2026-11-27-v2` adds:
+PR [#20](https://github.com/jgaos2026-gif/Artificial-virtual-assistant-/pull/20) was merged into main as commit [`9817b0f`](https://github.com/jgaos2026-gif/Artificial-virtual-assistant-/commit/9817b0f0093594be4b7571c649c6495dff71e4). It adds:
 - Windows PowerShell and Linux shell scripts for a limited local research foundation install.
 - A read-only `ava_military.doctor` diagnostic and focused tests.
 - A runbook that explicitly lists non-goals and remaining integration gates.
 - SECURITY.md, CODEOWNERS, and Dependabot metadata.
 - A Windows/Linux CI matrix with installer smoke-test steps.
 
-The installer refuses to overwrite a non-empty target. It installs no service, listener, firewall rule, privileged component, model, or automatic recovery. The branch's CI run [#234](https://github.com/jgaos2026-gif/Artificial-virtual-assistant-/actions/runs/46095196786) completed successfully on both Windows Server 2025 and Ubuntu. Each platform passed the full 101-test suite and its foundation-installer smoke test. The Windows run initially exposed two byte-lock initialization defects in the existing anchor and shared-lock modules; both were fixed, and the rerun passed. This is hosted-runner evidence, not a physical-machine install or security certification.
+The installer refuses to overwrite a non-empty target. It installs no service, listener, firewall rule, privileged component, model, or automatic recovery. CI run [#239](https://github.com/jgaos2026-gif/Artificial-virtual-assistant-/actions/runs/46095339261) completed successfully on Windows Server 2025 and Ubuntu. Each platform passed the full 101-test suite and its foundation-installer smoke test. The Windows run exposed two byte-lock initialization defects in the existing anchor and shared-lock modules; both were fixed, and the rerun passed. This is hosted-runner evidence, not a physical-machine install or security certification.
 
 The prior inventory conclusions remain: authenticated IPC, live Universal Braid, three-room runtime, external SB688 anchor/quarantine/recovery, independent SB712 witness quorum, OS-enforced isolation, integrated memory/backup/restore, signed release/SBOM, and integrated acceptance are still open.
