@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Source = (Split-Path -Parent $PSScriptRoot),
-    [string]$Runtime = (Join-Path $env:USERPROFILE "JGA\\OASIS-Research-Runtime")
+    [string]$Runtime = (Join-Path $env:USERPROFILE "JGA\OASIS-Research-Runtime")
 )
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -33,7 +33,7 @@ if (-not (Test-Path -LiteralPath $venv)) {
     & $python.Source -m venv $venv
     if ($LASTEXITCODE -ne 0) { throw "Virtual environment creation failed." }
 }
-$venvPython = Join-Path $venv "Scripts\\python.exe"
+$venvPython = Join-Path $venv "Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $venvPython)) { throw "Expected Windows venv interpreter is missing: $venvPython" }
 
 & $venvPython -m pip install --no-deps -e $Source
