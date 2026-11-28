@@ -147,6 +147,9 @@ def build_health_snapshot(
         if value < 0 or (not allow_zero and value == 0):
             raise RuntimeStatusError(f"{field} is outside its allowed range")
 
+    if isinstance(expected_components, (str, bytes)):
+        raise RuntimeStatusError("expected_components must be an iterable of component ids, not text")
+
     expected: list[str] = []
     seen_expected: set[str] = set()
     for raw_id in expected_components:
@@ -239,10 +242,10 @@ def build_health_snapshot(
     reported_states = {row.reported_state for row in rows}
     if HealthState.FAILED in states or HealthState.FAILED in reported_states:
         overall = HealthState.FAILED
-    elif HealthState.DEGRADED in states or HealthState.DEGRADED in reported_states:
-        overall = HealthState.DEGRADED
     elif not rows or HealthState.UNKNOWN in states or HealthState.STALE in states:
         overall = HealthState.UNKNOWN
+    elif HealthState.DEGRADED in states or HealthState.DEGRADED in reported_states:
+        overall = HealthState.DEGRADED
     else:
         overall = HealthState.HEALTHY
 

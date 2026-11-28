@@ -183,3 +183,18 @@ def test_stale_last_reported_failure_remains_visible_in_overall_state():
     assert component.state is HealthState.STALE
     assert component.reported_state is HealthState.FAILED
     assert snapshot.overall_state is HealthState.FAILED
+
+
+def test_stale_degraded_component_makes_overall_status_unknown():
+    snapshot = build_health_snapshot(
+        [obs(state=HealthState.DEGRADED, observed_at=NOW - timedelta(seconds=60))],
+        ["oasis-supervisor"],
+        as_of=NOW,
+    )
+    assert snapshot.components[0].reported_state is HealthState.DEGRADED
+    assert snapshot.overall_state is HealthState.UNKNOWN
+
+
+def test_expected_components_rejects_a_single_string_argument():
+    with pytest.raises(RuntimeStatusError, match="not text"):
+        build_health_snapshot([], "oasis-supervisor", as_of=NOW)
