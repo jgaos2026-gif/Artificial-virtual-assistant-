@@ -21,6 +21,7 @@ than allowing them to appear healthy.
 - Stale observations become STALE; their last reported state remains visible.
 - Unregistered components remain visible as UNKNOWN.
 - Duplicate observations and duplicate registry entries are rejected.
+- Registry and observation batches are bounded to 512 components.
 - A known failure is not hidden by another component being missing or stale.
 - Invalid CPU and byte metrics are rejected.
 

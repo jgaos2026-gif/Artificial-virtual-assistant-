@@ -14,6 +14,9 @@ import math
 from typing import Iterable
 
 
+MAX_COMPONENTS = 512
+
+
 class HealthState(str, Enum):
     HEALTHY = "HEALTHY"
     DEGRADED = "DEGRADED"
@@ -153,6 +156,8 @@ def build_health_snapshot(
     expected: list[str] = []
     seen_expected: set[str] = set()
     for raw_id in expected_components:
+        if len(expected) >= MAX_COMPONENTS:
+            raise RuntimeStatusError(f"expected component registry exceeds {MAX_COMPONENTS} entries")
         component_id = _identifier(raw_id, "expected component id")
         if component_id in seen_expected:
             raise RuntimeStatusError(f"duplicate expected component: {component_id}")
@@ -160,7 +165,11 @@ def build_health_snapshot(
         expected.append(component_id)
 
     by_id: dict[str, ComponentObservation] = {}
+    observation_count = 0
     for observation in observations:
+        observation_count += 1
+        if observation_count > MAX_COMPONENTS:
+            raise RuntimeStatusError(f"observation batch exceeds {MAX_COMPONENTS} entries")
         if not isinstance(observation, ComponentObservation):
             raise RuntimeStatusError(
                 "observations must contain ComponentObservation values"
@@ -261,6 +270,7 @@ __all__ = [
     "ComponentHealth",
     "ComponentObservation",
     "HealthState",
+    "MAX_COMPONENTS",
     "ResourceUsage",
     "RuntimeHealthSnapshot",
     "RuntimeStatusError",

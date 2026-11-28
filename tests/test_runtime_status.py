@@ -198,3 +198,16 @@ def test_stale_degraded_component_makes_overall_status_unknown():
 def test_expected_components_rejects_a_single_string_argument():
     with pytest.raises(RuntimeStatusError, match="not text"):
         build_health_snapshot([], "oasis-supervisor", as_of=NOW)
+
+
+def test_expected_registry_is_bounded():
+    from ava_military.runtime_status import MAX_COMPONENTS
+    with pytest.raises(RuntimeStatusError, match="registry exceeds"):
+        build_health_snapshot([], [f"component-{i}" for i in range(MAX_COMPONENTS + 1)], as_of=NOW)
+
+
+def test_observation_batch_is_bounded():
+    from ava_military.runtime_status import MAX_COMPONENTS
+    observations = (obs(f"component-{i}") for i in range(MAX_COMPONENTS + 1))
+    with pytest.raises(RuntimeStatusError, match="batch exceeds"):
+        build_health_snapshot(observations, [], as_of=NOW)
