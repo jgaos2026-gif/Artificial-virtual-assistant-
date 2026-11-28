@@ -89,7 +89,7 @@ def test_identity_loader_rejects_oversized_artifact_before_full_read(tmp_path):
 
 def test_identity_loader_rejects_excessive_json_nesting(tmp_path):
     path = tmp_path / "identity.json"
-    path.write_bytes(b"[" * 2000 + b"]" * 2000)
+    path.write_bytes(b"[" * 10000 + b"]" * 10000)
 
     with pytest.raises(IdentityLoadError, match="nesting limit"):
         load_identity(path, profile="test")
@@ -154,7 +154,7 @@ def test_governance_gateway_rejects_oversized_policy_before_full_read(tmp_path):
 
 def test_governance_gateway_rejects_excessive_json_nesting(tmp_path):
     path = tmp_path / "policy.json"
-    path.write_bytes(b"[" * 2000 + b"]" * 2000)
+    path.write_bytes(b"[" * 10000 + b"]" * 10000)
 
     with pytest.raises(PolicyBindingError, match="nesting limit"):
         bind_policy(path, operating_mode=Mode.LOCAL_NODE_MESH)
