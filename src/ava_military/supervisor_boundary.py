@@ -205,7 +205,7 @@ class BoundedTelemetryBuffer:
         self.max_routine_components = max_routine_components
         self.max_fault_records = max_fault_records
         self._routine: dict[str, ComponentObservation] = {}
-        self._faults: dict[tuple[str, str], ComponentObservation] = {}
+        self._faults: dict[str, ComponentObservation] = {}
         self._priority_events: dict[str, PriorityEvent] = {}
         self.coalesced_count = 0
         self.overflow_latched = False
@@ -214,7 +214,7 @@ class BoundedTelemetryBuffer:
         if self.overflow_latched:
             return False
         if observation.state in self.FAULT_STATES:
-            key = (observation.component_id, observation.instance_id)
+            key = observation.component_id
             if key not in self._faults and len(self._faults) + len(self._priority_events) >= self.max_fault_records:
                 self.overflow_latched = True
                 return False
@@ -241,7 +241,11 @@ class BoundedTelemetryBuffer:
 
     def snapshot(self) -> tuple[ComponentObservation, ...]:
         # Fault records are never replaced by routine coalescing.
-        return tuple(self._faults.values()) + tuple(self._routine.values())
+        faulted_components = set(self._faults)
+        return tuple(self._faults.values()) + tuple(
+            item for component_id, item in self._routine.items()
+            if component_id not in faulted_components
+        )
 
     @property
     def priority_events(self) -> tuple[PriorityEvent, ...]:
