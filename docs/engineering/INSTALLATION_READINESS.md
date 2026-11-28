@@ -142,6 +142,6 @@ Branch `work/ava-local-research-install-2026-11-27-v2` adds:
 - SECURITY.md, CODEOWNERS, and Dependabot metadata.
 - A Windows/Linux CI matrix with installer smoke-test steps.
 
-The installer refuses to overwrite a non-empty target. It installs no service, listener, firewall rule, privileged component, model, or automatic recovery. The branch's installer tests are **NOT VERIFIED** until the CI runner reports a completed result. Do not treat the work branch as a successful install record.
+The installer refuses to overwrite a non-empty target. It installs no service, listener, firewall rule, privileged component, model, or automatic recovery. The branch's CI run [#234](https://github.com/jgaos2026-gif/Artificial-virtual-assistant-/actions/runs/46095196786) completed successfully on both Windows Server 2025 and Ubuntu. Each platform passed the full 101-test suite and its foundation-installer smoke test. The Windows run initially exposed two byte-lock initialization defects in the existing anchor and shared-lock modules; both were fixed, and the rerun passed. This is hosted-runner evidence, not a physical-machine install or security certification.
 
 The prior inventory conclusions remain: authenticated IPC, live Universal Braid, three-room runtime, external SB688 anchor/quarantine/recovery, independent SB712 witness quorum, OS-enforced isolation, integrated memory/backup/restore, signed release/SBOM, and integrated acceptance are still open.
