@@ -33,7 +33,13 @@ Passing a component test does not establish integrated-system security or milita
 
 ## Repository status
 
-This repository contains a research-stage Python reference implementation for selected governance, admission, provenance, COLD-record, memory, and checkpoint interfaces. These modules are not integrated into a deployable AVA/OASIS runtime. Main CI run #199 passed 98 tests on commit 373b7c8583b34fca06f1dd2966ea50ffb1242821; those are component/reference tests, not the eleven integrated acceptance tests. The integrated acceptance gate remains NOT RUN. No production deployment or operational use is authorized by this repository.
+This repository contains a research-stage Python reference implementation for selected governance, admission, provenance, COLD-record, memory, checkpoint, identity-fixture, policy-binding, and local decision-receipt interfaces. These modules are not integrated into a deployable AVA/OASIS runtime.
+
+Recent evidence:
+- PR #26 bounded identity and policy descriptor input; GitHub Actions run #265 passed 124 tests with 2 skipped on Windows and Ubuntu.
+- PR #27 added a bounded same-host hash-chained decision-receipt log and receipt-before-return governance path; GitHub Actions run #280 passed 141 tests with 2 skipped on Windows and Ubuntu. The code-bearing PR head tested by that run was `e5e17c86f13b12e2a37373d5f1899acb01eb6e0b4`; the merged main commit is `11831e152492113b2d05cca312672b23f17ae877`.
+
+These are component/reference tests, not integrated AVA acceptance. OB-01 runtime boot/restart and OB-02 live health/supervisor acceptance remain BLOCKED / NOT RUN. The integrated runtime, authenticated IPC, independent external anchoring, production identity authentication, integrated memory, and replaceable cognition path are not established. No production deployment or operational use is authorized by this repository.
 
 ## Limited local research foundation install
 
