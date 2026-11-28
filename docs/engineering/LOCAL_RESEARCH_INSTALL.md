@@ -6,7 +6,7 @@
 
 The Windows and Linux scripts create a Python virtual environment in a separate runtime directory and install this repository in editable mode. They install no service, network listener, firewall rule, model, privileged component, authority service, or autonomous recovery mechanism. The installer refuses a non-empty runtime directory. It does not delete, reset, or migrate an existing runtime.
 
-Requirements: Python 3.11 or newer, local source checkout, and pip/setuptools available to the interpreter. The package currently declares no runtime dependencies.
+Requirements: Python 3.11 or newer, local source checkout, pip, and network access (or a cached build backend) so pip can provision the declared setuptools build requirement in an isolated build environment. The package currently declares no runtime dependencies.
 
 ## Windows
 
