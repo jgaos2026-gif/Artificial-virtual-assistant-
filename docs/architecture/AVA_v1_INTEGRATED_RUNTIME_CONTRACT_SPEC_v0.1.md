@@ -1,7 +1,7 @@
 # AVA v1 Integrated Runtime Contract Specification
 
 **Version:** 0.1  
-**Status:** v0.1 baseline decisions approved; implementation contract remains subject to listed verification qualifications  
+**Status:** LOCKED FOR v0.1 IMPLEMENTATION; platform-security and production-trust qualifications remain unverified  
 **Branch:** `work/ava-v1-ob01-ob02-acceptance-2026-11-27`  
 **Release posture:** RELEASE BLOCKED  
 **Verification posture:** OB-01 and OB-02 remain BLOCKED until real subprocess execution evidence exists.
@@ -64,7 +64,7 @@ The following module paths are proposed homes, not existing implementation claim
 - `src/ava_military/oasis/health.py`
 - `src/ava_military/oasis/supervisor.py`
 - `src/ava_military/identity/loader.py`
-- `src/ava_military/governance/gateway.py`
+- `src/ava_military/governance_gateway.py`
 
 ### 4.1 Lifecycle
 
@@ -219,7 +219,7 @@ The existing `tests/test_v1_oasis_boot_readiness.py` precondition guards remain 
 
 - `governance.py` remains the pure policy evaluation primitive.
 - `doctor.py` remains read-only package/environment diagnostics and must not claim live runtime health.
-- `anchor.py`, `ledger.py`, `sovereign.py`, `cold_log_tx.py`, and `physiology.py` remain decoupled reference components until explicit runtime adapters and acceptance evidence connect them.
+- `anchor.py`, `avo_provenance_gate.py`, `braid_provenance.py`, `braid_reader_adapter.py`, `cold_log_tx.py`, `ledger.py`, `physiology.py`, `shared_cross_process_lock.py`, and `sovereign.py` remain deferred, decoupled reference components until explicit runtime adapters and acceptance evidence connect them.
 - Architecture documents define intended responsibility, not proof of implementation.
 - OC-001 through OC-009 remain unrecovered unless their actual source or approved contract evidence is located.
 
@@ -250,7 +250,7 @@ The nine v0.1 baseline decisions are recorded as approved in Section 12. Approva
 - Concrete configured probe freshness and timeout thresholds, including boundary behavior.
 - Actual identity trust-validation and key-custody mechanism beyond development-fixture schema validation.
 - Policy version source, protected binding mechanism, and durable receipt format.
-- Required component inventory, conditional on source inspection before adding any modules beyond the approved initial five.
+- Decision 8 source audit is recorded in Section 13. Any newly discovered module or dependency must be inspected and classified before it can become a required boot component.
 - Graceful-shutdown drain deadline, in-flight-work abort semantics, durable flush guarantees, and exit-code mapping.
 - Exact harness timeout values, process escalation, and resource-cleanup rules.
 
@@ -276,7 +276,7 @@ OB-01 and OB-02 remain BLOCKED until the implementation exists and real CLI/subp
 | 5 | Governance policy input | Explicit policy path and operating mode in runtime configuration. Gateway binds policy version and records its digest while wrapping the existing `governance.py` primitive. | Missing or invalid policy fails boot. Protected policy storage and durable receipt semantics remain to be implemented and verified. |
 | 6 | Persisted restart state | Explicit isolated state directory for each CLI run; flush on shutdown; verify continuity on a second process boot. | No implicit home-directory state and no shared mutable state across independent test runs. |
 | 7 | Health aggregation | Deterministic roll-up from fresh, actual component probes using `STARTING`, `HEALTHY`, `DEGRADED`, `UNHEALTHY`, and `STOPPING`. | Freshness and timeout thresholds must be explicitly configured and tested. No manual healthy flags or silent default thresholds. |
-| 8 | Required components | Initial candidate set: Lifecycle, Identity loader, Governance gateway, IPC service, and Health registry. | **Conditional on source inspection.** Do not add other modules to the required inventory until their actual source, dependency, and role are inspected and recorded. |
+| 8 | Required components | Existing source dependencies: `__init__.py` and `governance.py`. New OB-01 runtime components to be created: Lifecycle, Identity loader, Governance gateway, IPC service, and Health registry. | **Source inspection completed.** The new runtime components do not yet exist. The exact existing-module classifications are recorded in Section 13. Do not add further required modules without a new source audit. |
 | 9 | Supervisor and fault injection | Permit control only for explicitly registered disposable test components; block test fault injection in production profile; require separate authorization and audit-log attempts/results. | Reject unregistered and protected targets. A health client cannot escalate to supervisor control. |
 
 ### 12.1 Explicit unresolved verification qualifications
@@ -289,7 +289,7 @@ The approval above does not waive these gates:
 4. **Session credentials:** specify generation, entropy source, delivery, storage, expiry/rotation, and replay handling. Never expose credentials in command lines, logs, or evidence bundles.
 5. **Probe thresholds:** select explicit freshness and timeout configuration values based on implementation and target test conditions. Test fresh, stale, missing, timed-out, failed, and recovered probes. No numeric threshold is asserted here.
 6. **Identity and governance:** development JSON schema checks do not prove cryptographic identity. Production trust validation, protected policy binding, key custody, and durable decision receipts remain separate requirements.
-7. **Decision 8 source inspection:** inspect the actual repository tree and dependencies before adding any further required runtime component. The five listed items are the initial approved candidate set, not proof that their code exists.
+7. **Decision 8 source inspection:** completed for all 12 Python files present directly under `src/ava_military/` on the audited branch. The findings and four-way classifications are recorded in Section 13. New files, nested packages, or newly discovered dependencies still require inspection before being added to the required boot set.
 8. **Shutdown and harness details:** before OB-01 acceptance lock, specify bounded in-flight-work drain/abort behavior, durable flush success/failure semantics, exit codes, startup/readiness/request/shutdown timeouts, process termination escalation, and guaranteed child-process reaping. Numeric timeout values must be explicit and justified; they are not silently inferred by this document.
 
 ### 12.2 Required implementation sequence
@@ -307,3 +307,167 @@ No step may be skipped or reordered to make a status appear complete.
 ### 12.3 Change-scope record
 
 This amendment changes this specification only. It does not add or modify runtime code, acceptance tests, readiness guards, installer behavior, protected core files, or `main`. No merge or deployment is authorized. OB-01 and OB-02 remain **BLOCKED** until implementation and real subprocess/CI evidence satisfy their acceptance criteria.
+
+
+## 13. Decision 8 source audit and v0.1 contract lock
+
+**Audit scope:** All 12 Python files present directly under `src/ava_military/` on branch `work/ava-v1-ob01-ob02-acceptance-2026-11-27` were inspected. Classification is based on the inspected source, not filenames or intended architecture. The audit does not claim that any new runtime service has been implemented.
+
+### 13.1 Four-way source classification
+
+| Existing module | v0.1 classification | Evidence-based disposition |
+|---|---|---|
+| `__init__.py` | Required for OB-01 boot | Existing package scaffold/version metadata. No runtime startup behavior is supplied by this file. |
+| `governance.py` | Required for OB-01 boot | Existing fail-closed policy primitive; the new runtime governance gateway will wrap it. It does not itself provide authenticated identity, IPC, or durable receipts. |
+| `doctor.py` | Excluded from v0.1 live runtime | Read-only package/environment diagnostics. It remains separate from live runtime health and must not be used as the health registry. |
+| `anchor.py` | Deferred | COLD anchoring/wake-verification reference requiring an externally supplied anchor authority; not an OB-01 boot dependency. |
+| `avo_provenance_gate.py` | Deferred | Provenance-gated read adapter with storage/locking dependencies; not an OB-01 boot dependency. |
+| `braid_provenance.py` | Deferred | COLD provenance classification/reference helpers; local integrity helpers do not establish independent anti-rollback custody. |
+| `braid_reader_adapter.py` | Deferred | Bounded JSONL reader/provenance adapter; not a lifecycle, identity, governance, IPC, or health service. |
+| `cold_log_tx.py` | Deferred | Narrow COLD JSONL transaction writer; not an integrated memory runtime or authenticated evidence service. |
+| `ledger.py` | Deferred | In-memory hash-chain reference; does not supply the required persistent runtime ledger/anchor contract. |
+| `physiology.py` | Deferred | HOT/WARM/COLD memory reference; not an integrated OASIS lifecycle or external trust boundary. |
+| `shared_cross_process_lock.py` | Deferred | Same-host advisory-lock utility for storage adapters; not a required boot service. |
+| `sovereign.py` | Deferred | Clip Brick admission reference whose verifier/owner authority is supplied externally; not the initial OASIS boot path. |
+
+**Optional integration:** None of the inspected modules qualifies. A module may be classified as optional only after a safe post-boot attachment contract, failure isolation, and health behavior are defined.
+
+**Existing required set:** `__init__.py` and `governance.py` (the latter consumed through the new gateway).
+
+**New implementation required for OB-01:** the OASIS package/entry point and lifecycle/runtime coordinator; identity loader; governance gateway; local IPC service and authentication/session layer; health registry/probe scheduler; and isolated continuity-state handling. These are new implementation work, not existing source discoveries.
+
+**New implementation required for OB-02:** supervisor service and separately authorized control/fault-injection support for explicitly registered disposable test components. This is not part of the minimum OB-01 boot gate.
+
+### 13.2 CLI exit codes and structured errors
+
+The CLI is launched as an external process using `python -m ava_military.oasis`. The following process exit-code mapping is normative for v0.1:
+
+| Exit code | Stable error code | Meaning |
+|---:|---|---|
+| 0 | `CLEAN_SHUTDOWN` | Runtime completed an orderly shutdown and required state flush. |
+| 2 | `CLI_CONFIG_INVALID` | Invalid CLI arguments, missing required configuration, malformed configuration, or invalid configuration values. |
+| 10 | `IDENTITY_INVALID` | Identity artifact missing, malformed, unsupported, or rejected by the configured development trust-validation path. |
+| 11 | `GOVERNANCE_BIND_FAILED` | Policy missing, invalid, unsupported, or unable to bind to the runtime instance. |
+| 12 | `IPC_SETUP_FAILED` | Local IPC endpoint creation, permission setup, or service startup failed. |
+| 13 | `REQUIRED_COMPONENT_FAILED` | A required component failed initialization or its required boot/readiness probe failed. |
+| 14 | `STATE_CONTINUITY_INVALID` | Continuity record missing when resume is required, corrupt, incompatible, mismatched, or indicates an unclean prior run. |
+| 20 | `RUNTIME_FATAL` | Unexpected fatal runtime failure after startup or an unhandled internal failure not covered by a more specific startup code. |
+
+The first applicable startup failure code MUST be returned; later cleanup errors must not overwrite the primary failure code. A failure to flush continuity state during shutdown MUST prevent exit code 0 and return `STATE_CONTINUITY_INVALID` (14), unless a more specific fatal error already controls the exit.
+
+IPC request-level denials do not terminate the runtime process. They return structured protocol errors as defined below. A post-readiness health transition to `DEGRADED` or `UNHEALTHY` is represented in health state and does not by itself force process exit. A fatal lifecycle failure after readiness exits with code 20.
+
+Every fatal CLI/startup/runtime error MUST emit exactly one JSON object per line to stderr with this schema:
+
+```json
+{
+  "event": "ava.error.v1",
+  "code": "IDENTITY_INVALID",
+  "exit_code": 10,
+  "phase": "IDENTITY_LOADED",
+  "component_id": null,
+  "reason": "Safe, non-secret diagnostic text",
+  "retryable": false,
+  "timestamp": "RFC3339 UTC timestamp"
+}
+```
+
+Fields `component_id` and `retryable` are present as null/boolean when not applicable. The `reason` field MUST NOT contain credentials, private keys, secret configuration values, or full sensitive artifact contents. Tracebacks and raw secret-bearing exception strings MUST NOT be emitted in normal operation. stdout is not the fatal-error channel. Tests assert both the stable code/exit code and the structured stderr record, not merely a non-zero exit.
+
+### 13.3 IPC framing, envelopes, and rejection behavior
+
+The v0.1 wire format is length-prefixed UTF-8 JSON over the selected native local IPC transport:
+
+- Each frame begins with a four-byte unsigned big-endian payload length.
+- The payload is one UTF-8 JSON object.
+- Maximum frame payload is 1,048,576 bytes. Zero-length, oversized, truncated, invalid UTF-8, non-object JSON, or unsupported protocol-version frames are rejected.
+- A frame is complete only when the declared number of payload bytes has been read. Partial reads are accumulated within the configured IPC request deadline; the server MUST NOT assume one read equals one frame.
+- JSON request/response envelopes use `protocol_version`, `message_type`, and `request_id`. Authenticated requests additionally carry `session_id` and a monotonically increasing per-session `sequence`.
+- Request messages use `operation` and `payload`. Responses echo `request_id` and contain `ok` plus either `result` or a structured `error`; both result and error MUST NOT be populated together.
+
+The authentication handshake establishes a session before an operation request is accepted. The handshake mechanism must bind the fresh per-session credential to the verified OS peer identity where supported. Exact credential proof construction and platform APIs remain implementation qualifications; the wire envelope does not claim cryptographic strength by itself.
+
+Rejection behavior is deterministic:
+
+| Condition | Required behavior |
+|---|---|
+| Malformed, truncated, oversized, invalid-encoding, or unsupported-version frame | Reject the frame with a protocol error when a safe response can be framed, then close the connection. No operation is executed. |
+| Missing, invalid, expired, or mismatched session credential | Return `AUTHENTICATION_FAILED` where a safe response is possible, establish no authorized session, and close the connection. |
+| OS peer identity check fails or does not match the authenticated session binding | Return `PEER_IDENTITY_REJECTED` where safe, establish no authorized session, and close the connection. |
+| Health-only session requests a supervisor operation | Return `PERMISSION_DENIED` for that request; do not mutate component/runtime state; keep the authenticated session open unless a separate protocol violation occurs. |
+| Duplicate request ID or non-increasing per-session sequence | Return `REQUEST_REPLAY_REJECTED`; do not execute the request; close the session. |
+| Unknown operation or invalid operation payload | Return `INVALID_REQUEST`; do not execute the operation. |
+
+The protocol error envelope contains a stable `code`, safe `reason`, and `request_id` when available. It MUST NOT echo credentials or sensitive request fields. Authentication alone grants no operation permission. Health-query permission and supervisor-control permission are distinct capabilities, and authorization is checked for every operation.
+
+Secrets, credentials, credential proofs, and private keys MUST NOT appear in CLI arguments, stdout/stderr logs, continuity state, or retained evidence. Evidence may record non-secret authentication outcomes and redacted identifiers.
+
+### 13.4 Probe configuration and timeout semantics
+
+The runtime configuration MUST explicitly provide these positive integer millisecond values:
+
+- `probe_interval_ms`: scheduling interval for component probes.
+- `probe_timeout_ms`: maximum execution budget for an individual probe.
+- `probe_max_age_ms`: maximum age of a completed probe result that may be considered fresh.
+
+No implicit or hardcoded default is permitted. Missing, zero, negative, non-integer, or internally inconsistent values fail configuration validation with `CLI_CONFIG_INVALID`. `probe_max_age_ms` MUST be greater than or equal to `probe_interval_ms`; the selected values must be recorded in the test configuration and evidence package. Numeric values are deployment/test configuration, not universal constants embedded in this specification.
+
+Probe execution MUST be isolated from the health request path. A probe that exceeds `probe_timeout_ms` is marked timed out; it must not block the health response or prevent unrelated probes from completing. The implementation must use a bounded execution mechanism capable of containing a hung probe; a worker that cannot be stopped or isolated is not sufficient evidence of timeout enforcement.
+
+The health endpoint returns the latest completed probe snapshot and its age/status without waiting indefinitely for a running probe. A required probe that is missing, stale, timed out, or failed makes aggregate health `UNHEALTHY`; the same condition for an optional component makes aggregate health at least `DEGRADED`. A late result from a superseded/timed-out probe must not silently overwrite a newer result. Freshness and timeout boundary behavior must be covered by tests under controlled delay and load.
+
+### 13.5 Persisted restart-continuity artifact
+
+All continuity state is stored only under the explicit caller-supplied isolated state directory. The v0.1 continuity artifact is `continuity.json` and contains at least:
+
+- `schema_version`
+- `runtime_instance_id`
+- `boot_sequence`
+- `run_state` (`RUNNING` or `CLEAN_STOPPED`)
+- `identity_id`
+- `identity_epoch`
+- `policy_version`
+- `policy_digest`
+- `started_at`
+- `clean_shutdown_at` (null until a clean shutdown is durably recorded)
+
+No session credential, private key, bearer token, or secret configuration value may be stored in this artifact.
+
+The CLI configuration MUST explicitly select `state_mode` as `initialize` or `resume`:
+
+- `initialize` is permitted only for a new or empty isolated state directory with no existing continuity artifact. It creates boot sequence 1.
+- `resume` requires a readable, supported continuity artifact whose prior `run_state` is `CLEAN_STOPPED`. The identity identifier/epoch and policy version/digest must match the newly loaded identity and bound policy. The boot sequence increments by one.
+- A prior `RUNNING` marker indicates abnormal termination. Resume fails closed with `STATE_CONTINUITY_INVALID`; automatic promotion to clean state or silent recovery is prohibited in v0.1.
+- A missing artifact in `resume` mode, an existing artifact in `initialize` mode, malformed/corrupt JSON, unsupported schema, identity/policy mismatch, or failed durable write fails closed. It must not be silently treated as a first boot.
+- On boot, write `RUNNING` before reporting `READY`. On graceful shutdown, stop accepting work, complete the specified bounded drain, flush required durable state, then write `CLEAN_STOPPED` and its timestamp before returning exit code 0.
+- Continuity updates use a same-directory temporary file, flush the file, and atomically replace the prior record. Directory metadata durability must be requested where the platform supports it and the actual platform behavior must be tested.
+
+A clean restart test uses a second independent subprocess with `state_mode=resume` against the same test-owned state directory. It verifies the incremented boot sequence and matching identity/policy bindings. This local continuity record is not an independent cryptographic anchor and does not prove resistance to malicious host-level tampering.
+
+### 13.6 Remaining verification qualifications
+
+The contract is locked for v0.1 implementation, but the following are not claimed as implemented or verified:
+
+1. Linux Unix-domain-socket peer-credential API, socket ownership/mode, and behavior on supported target distributions.
+2. Windows named-pipe security descriptor/ACL, peer identity validation, inheritance behavior, and cleanup on supported Windows versions.
+3. Session credential generation, entropy, secure delivery, expiry/rotation, and cross-session replay resistance.
+4. End-to-end enforcement and testing that health permission cannot invoke supervisor operations.
+5. Probe timing values selected for each test profile and real behavior under load, delay, worker failure, and cancellation.
+6. Cryptographic identity verification, production key custody, protected policy binding, and durable governance receipt semantics.
+7. Cross-platform atomic replacement and directory durability behavior for continuity state.
+8. Bounded graceful-shutdown drain, in-flight request handling, IPC request deadlines, startup/readiness deadlines, harness timeouts, process escalation, and guaranteed child-process reaping. Each test profile must provide explicit timeout values; this document does not invent universal timing constants.
+9. The proposed runtime modules listed in Section 13.1 must be implemented and then tested as real subprocess services. Their inclusion in the contract is not evidence of existence.
+
+### 13.7 Specification lock and implementation order
+
+The v0.1 interface and behavior contract is now **LOCKED FOR IMPLEMENTATION**. A change to a normative field, exit code, envelope, state transition, or required component boundary requires a documented spec revision before implementation relies on the changed behavior.
+
+The required sequence remains:
+
+1. **Spec lock:** this documentation-only contract lock, including the Decision 8 source audit and remaining qualifications.
+2. **OB-01 vertical slice:** implement the local-first subprocess boot, identity, governance binding, IPC, health, lifecycle, and continuity-state path.
+3. **OB-01 subprocess tests:** verify real startup, readiness, structured failures, clean shutdown, and second-process restart continuity.
+4. **OB-02 supervisor/fault-injection tests:** implement and verify separately authorized control of disposable test components, real probe transitions, recovery, production-profile rejection, and permission separation.
+5. **Retire BLOCKED guards only after CI evidence:** change the precondition guards only after corresponding real subprocess acceptance tests pass in CI with reproducible evidence.
+
+Platform and production-trust qualifications remain open until implementation and tests provide evidence. The lock authorizes no merge, deployment, installer execution, or change to `main`. OB-01, OB-02, and the overall release remain **BLOCKED**.
