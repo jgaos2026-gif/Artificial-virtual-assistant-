@@ -160,7 +160,7 @@ class PsutilTelemetryCollector:
                 self._empty_resources(FieldQuality.MISSING, "PROCESS_DISAPPEARED"),
                 ("PROCESS_DISAPPEARED",),
             )
-        except self._psutil.AccessDenied:
+        except (self._psutil.AccessDenied, PermissionError):
             identity = ProcessIdentity(component_id, None, None, self.boot_id, f"unverified:{sample_id}")
             return ObservationEnvelope(
                 sample_id, sequence, self.collector_id, self.collector_version,
