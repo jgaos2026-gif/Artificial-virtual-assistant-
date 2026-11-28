@@ -41,8 +41,7 @@ The recursive main-branch inventory contains no:
 - Supabase project configuration, migrations, schema, row-level security policies, or integration tests.
 - VS Code workspace configuration, tasks, launch profiles, or development-container configuration.
 - Backup/restore scripts, backup format, retention policy, key-recovery procedure, or restore-drill evidence.
-- Runtime dependency lockfile, SBOM generation, signed release artifact, release workflow, or published installation package.
-- Signed release, SBOM generation, provenance attestations, release publication, automated dependency/static/secret scanning, and branch-protection enforcement.
+- Dependency lockfile, SBOM generation, signed release artifact, provenance attestations, release workflow/publication, and automated dependency/static/secret scanning.
 
 The project metadata declares no runtime dependencies. The repository is public, has no GitHub release, no license file, and no configured branch ruleset. The main branch is currently unprotected. The workflow runs tests but does not yet build and verify a release artifact, build a container, scan dependencies, generate an SBOM, or perform static security analysis.
 
