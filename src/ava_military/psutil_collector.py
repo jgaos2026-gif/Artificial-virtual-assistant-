@@ -12,7 +12,10 @@ import hashlib
 import math
 from typing import Callable
 
-import psutil
+try:
+    import psutil
+except ModuleNotFoundError:  # Keep bare test collection and contract imports dependency-light.
+    psutil = None
 
 from .supervisor_contract import (
     FieldQuality,
@@ -28,12 +31,15 @@ from .supervisor_contract import (
 MAX_CPU_BASELINES = 512
 
 
-def derive_host_boot_id(psutil_module=psutil) -> str:
+def derive_host_boot_id(psutil_module=None) -> str:
     """Create a stable per-boot identifier from psutil's cross-platform boot epoch.
 
     This is an operational boot discriminator, not a hardware-backed attestation.
     """
-    boot_epoch = float(psutil_module.boot_time())
+    module = psutil_module if psutil_module is not None else psutil
+    if module is None:
+        raise RuntimeError("psutil is required to derive the host boot ID")
+    boot_epoch = float(module.boot_time())
     if not math.isfinite(boot_epoch) or boot_epoch <= 0:
         raise ValueError("psutil returned an invalid boot time")
     digest = hashlib.sha256(f"{boot_epoch:.6f}".encode("ascii")).hexdigest()
@@ -58,7 +64,7 @@ class PsutilTelemetryCollector:
         sequence_start: int = 0,
         monotonic: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-        psutil_module=psutil,
+        psutil_module=None,
     ) -> None:
         self.collector_id = collector_id
         self.collector_version = collector_version
@@ -67,7 +73,9 @@ class PsutilTelemetryCollector:
         self._sequence = sequence_start
         self._monotonic = monotonic
         self._wall_clock = wall_clock
-        self._psutil = psutil_module
+        self._psutil = psutil_module if psutil_module is not None else psutil
+        if self._psutil is None:
+            raise RuntimeError("psutil is required for process telemetry collection")
         self._cpu_baselines: dict[str, tuple[str, str, float, float]] = {}
 
     @staticmethod
