@@ -213,7 +213,7 @@ class BoundedTelemetryBuffer:
             return False
         if observation.state in self.FAULT_STATES:
             key = (observation.component_id, observation.instance_id)
-            if key not in self._faults and len(self._faults) >= self.max_fault_records:
+            if key not in self._faults and len(self._faults) + len(self._priority_events) >= self.max_fault_records:
                 self.overflow_latched = True
                 return False
             self._faults[key] = observation
