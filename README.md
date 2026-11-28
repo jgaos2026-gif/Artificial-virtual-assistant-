@@ -35,6 +35,10 @@ Passing a component test does not establish integrated-system security or milita
 
 This repository now contains a research-stage Python reference implementation for selected governance, admission, provenance, COLD-record, memory, and checkpoint interfaces. These modules are not integrated into a deployable AVA/OASIS runtime. Main CI run #199 passed 98 tests on commit 373b7c8583b34fca06f1dd2966ea50ffb1242821; those are component/reference tests, not the eleven integrated acceptance tests. The integrated acceptance gate remains NOT RUN. No production deployment or operational use is authorized by this repository.
 
+## Limited local research foundation install
+
+A Windows PowerShell and Linux shell installer is available in [scripts](scripts/) for the Python research package only. See [Local Research Foundation Install](docs/engineering/LOCAL_RESEARCH_INSTALL.md). It refuses to overwrite a non-empty runtime directory and installs no service, network listener, firewall rule, privileged component, model, or unattended recovery. A successful install is **not** an integrated AVA/OASIS deployment or a security certification. Authenticated IPC, live Universal Braid, the three-room runtime, external SB688 trust and recovery, independent SB712 quorum, OS enforcement, integrated memory and backup/restore, and integrated acceptance remain open.
+
 ## Start here
 
 1. [Architecture](docs/architecture/AVA_MILITARY_ARCHITECTURE.md)
