@@ -1,0 +1,10 @@
+[package]
+name = "bct-algebra"
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+description = "Research implementation of a bounded Artin braid-group action for AVA/BCT"
+
+[dependencies]
+blake3 = "1.5"
+thiserror = "2.0"
