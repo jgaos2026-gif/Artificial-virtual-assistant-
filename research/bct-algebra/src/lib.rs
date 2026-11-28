@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn pure_braid_is_not_collapsed_to_endpoint_permutation() {
         let mut s = state(3);
-        word(&mut s, &[(0,false),(0,false),(0,false),(0,true),(0,true),(0,true)]);
+        word(&mut s, &[(0,false),(0,false)]);
         let identity = state(3);
         assert_eq!(s.strands(), identity.strands());
         assert_ne!(s.tes_digest("policy-v1"), identity.tes_digest("policy-v1"));
