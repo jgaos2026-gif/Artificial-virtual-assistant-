@@ -1,9 +1,10 @@
 """Runtime binding adapter for the existing pure governance policy primitive.
 
 This module binds a versioned policy descriptor to an operating mode and
-delegates authorization decisions to ava_military.governance.
-It does not authenticate actors, protect policy storage, or create durable
-decision receipts; those integrations remain separate acceptance gates.
+delegates authorization decisions to ava_military.governance. It can append
+bounded local decision receipts, but it does not authenticate actors, protect
+policy storage, provide an external monotonic anchor, or authorize side effects.
+Those integrations remain separate acceptance gates.
 """
 from __future__ import annotations
 
