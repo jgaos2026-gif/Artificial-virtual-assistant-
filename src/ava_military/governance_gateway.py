@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 from .decision_receipts import DecisionReceipt, DecisionReceiptError, DecisionReceiptLog
-\nfrom .decision_receipts import DecisionReceipt, DecisionReceiptError, DecisionReceiptLog
 
 from .governance import (
     ActionClass,
