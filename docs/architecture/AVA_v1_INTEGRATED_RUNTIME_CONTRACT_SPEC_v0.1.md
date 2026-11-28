@@ -1,7 +1,7 @@
 # AVA v1 Integrated Runtime Contract Specification
 
 **Version:** 0.1  
-**Status:** Proposed / draft for OB-01 and OB-02 implementation  
+**Status:** v0.1 baseline decisions approved; implementation contract remains subject to listed verification qualifications  
 **Branch:** `work/ava-v1-ob01-ob02-acceptance-2026-11-27`  
 **Release posture:** RELEASE BLOCKED  
 **Verification posture:** OB-01 and OB-02 remain BLOCKED until real subprocess execution evidence exists.
@@ -27,7 +27,7 @@ Version 0.1 does not:
 
 ### 3.1 Invocation
 
-Acceptance tests launch OASIS as an external CLI subprocess, using a documented module invocation or installed entry point. The invocation receives explicit, isolated configuration, state, and IPC paths.
+Acceptance tests launch OASIS as an external CLI subprocess using `python -m ava_military.oasis` with explicit configuration. A `pyproject.toml` console entry point may be added later. The invocation receives explicit, isolated configuration, state, and IPC paths. No in-process acceptance shortcut is permitted.
 
 The test harness MUST:
 - Start and observe a distinct child process.
@@ -37,7 +37,7 @@ The test harness MUST:
 - Terminate and reap child processes during teardown, including after assertion failures.
 - Avoid sharing mutable in-process runtime objects with the child.
 
-The exact CLI name and argument schema are implementation decisions to be recorded when the first runtime entry point is added. Tests must not invent them in advance.
+The approved v0.1 module invocation is `python -m ava_military.oasis`. The exact argument schema must be documented with the implementation before acceptance tests depend on it; tests must not invent undocumented flags.
 
 ### 3.2 IPC transport
 
@@ -47,9 +47,9 @@ The initial transport is authenticated local IPC:
 
 Loopback TCP is not the default for v0.1. If later required, it needs a separately reviewed binding, authentication, and firewall contract.
 
-IPC authentication MUST validate the operating-system peer identity where supported and bind each session to a fresh, unguessable per-run credential or challenge. Credentials must not be placed in world-readable files, command-line arguments, or logs. Socket/pipe permissions must restrict access to the intended runtime owner and authorized test harness.
+IPC authentication MUST validate the operating-system peer identity where the platform exposes a verifiable mechanism and bind each session to a fresh, unguessable per-session credential. Credentials must not be placed in world-readable files, command-line arguments, or logs. Socket/pipe permissions must restrict access to the intended runtime owner and authorized test harness. Linux peer-credential verification and Windows named-pipe ACL enforcement are explicit implementation and test gates, not assumed properties.
 
-Health requests are observational and read-only. Supervisor commands use a separately authorized operation class and must not inherit authority merely because a caller can query health.
+Health requests are observational and read-only. Supervisor commands use a separately authorized operation class and must not inherit authority merely because a caller can query health. Acceptance evidence must positively test permission separation, including that a health-authorized client cannot issue supervisor commands.
 
 ### 3.3 Isolation
 
@@ -82,7 +82,7 @@ The runtime must not report `READY` before identity, policy, required component 
 
 A boot failure must expose a stable machine-readable error code, phase, safe diagnostic reason, and non-zero process exit status. Sensitive material must not appear in diagnostics.
 
-Shutdown must stop accepting new work, complete or safely abort in-flight work according to explicit policy, flush required durable state, close IPC, and exit with an observable status. Restart continuity is verified by a new subprocess, not by reusing the old process.
+Shutdown must stop accepting new work, complete or safely abort in-flight work according to an explicitly documented policy, flush required durable state, close IPC, and exit with an observable status. The precise drain deadline, abort semantics, and exit-code mapping remain open implementation details and must be specified before OB-01 acceptance tests are locked. Restart continuity is verified by a new subprocess, not by reusing the old process.
 
 ### 4.2 Identity loader
 
@@ -145,7 +145,7 @@ Aggregate rules:
 - `HEALTHY` is permitted only when every required component has a successful, sufficiently fresh probe.
 - Missing, stale, timed-out, or failed probes must never be converted to `HEALTHY`.
 
-The exact freshness interval, probe timeout, and aggregate precedence must be configured and covered by tests before acceptance. Health output must distinguish current probe results from cached last-known observations.
+The freshness interval and probe timeout must be explicit configuration values, validated at startup, and covered by boundary tests. No default numeric thresholds are approved by this specification. Health output must distinguish current probe results from cached last-known observations. Missing or invalid threshold configuration must fail closed rather than silently selecting an undocumented value.
 
 ### 4.5 Supervisor
 
@@ -242,21 +242,68 @@ Evidence must be reproducible and traceable to the exact source commit. Test fix
 
 ## 10. Open decisions before implementation
 
-The following are intentionally unresolved and must be decided from repository conventions and actual requirements:
-1. Exact CLI module/entry-point name and argument schema.
-2. Supported IPC implementation per target OS and peer-authentication mechanism.
-3. Identity artifact schema and actual trust-validation mechanism.
-4. Policy version source, protected binding mechanism, and receipt format.
-5. Required component inventory for the first runtime slice.
-6. Probe freshness interval and timeout values.
-7. Test-profile authorization and isolation mechanism for supervisor fault injection.
-8. Graceful shutdown behavior for in-flight work and durable-state flush.
-9. Exact test harness timeouts and resource cleanup rules.
+The nine v0.1 baseline decisions are recorded as approved in Section 12. Approval settles the design direction, not implementation details or proof of platform behavior. The following qualifications remain open and are implementation/acceptance gates:
+- Exact CLI argument schema and future console-script packaging details.
+- Verified Linux Unix-domain-socket peer-credential mechanism and verified Windows named-pipe ACL/peer-authentication behavior on supported target versions.
+- Fresh per-session credential generation, storage, rotation/expiry, and replay handling details.
+- Positive tests proving health-query permission cannot authorize supervisor control.
+- Concrete configured probe freshness and timeout thresholds, including boundary behavior.
+- Actual identity trust-validation and key-custody mechanism beyond development-fixture schema validation.
+- Policy version source, protected binding mechanism, and durable receipt format.
+- Required component inventory, conditional on source inspection before adding any modules beyond the approved initial five.
+- Graceful-shutdown drain deadline, in-flight-work abort semantics, durable flush guarantees, and exit-code mapping.
+- Exact harness timeout values, process escalation, and resource-cleanup rules.
 
-No guessed interface should be promoted to a settled contract without an explicit decision record.
+No guessed interface or platform-security property may be promoted to verified behavior without implementation evidence and tests.
 
 ## 11. Release posture
 
 This specification is a proposed design contract only. It does not implement OASIS, identity loading, governance binding, IPC, health probes, or supervisor controls.
 
 OB-01 and OB-02 remain BLOCKED until the implementation exists and real CLI/subprocess acceptance runs produce the required evidence. AVA v1 remains RELEASE BLOCKED until all five integrated deliverables PASS together on the actual target machine.
+
+
+## 12. Approved v0.1 baseline decision record
+
+**Approval:** The project owner approved the following nine decisions for the v0.1 design baseline. This is a documentation decision only. It does not authorize runtime implementation, test execution, merge, deployment, installer execution, or changes to `main`.
+
+| # | Decision area | Approved v0.1 rule | Constraint / qualification |
+|---|---|---|---|
+| 1 | CLI invocation | Launch as an external subprocess with `python -m ava_military.oasis`, using explicit configuration. A `pyproject.toml` console entry point is a future packaging option. | No in-process acceptance shortcut. The argument schema must be documented before tests rely on it. |
+| 2 | IPC transport | Native local IPC: Unix-domain socket on Linux; Windows named pipe with restrictive ACL. | No HTTP listener or public network binding in v0.1. Each platform implementation and its security properties require verification. |
+| 3 | IPC authentication | OS peer identity where supported, plus a fresh per-session credential. Health-read and supervisor-control permissions are separate. | Credentials never appear in CLI arguments or logs. Authentication alone grants neither permission. Linux peer credentials, Windows pipe ACLs, credential lifecycle, and permission separation require explicit tests. |
+| 4 | Identity artifact | Versioned development JSON fixture with `schema_version`, `identity_id`, `epoch`, `lineage_reference`, and `verification_key_reference` where applicable. | Structural validation only. It is not production cryptographic identity verification or proof of key custody. |
+| 5 | Governance policy input | Explicit policy path and operating mode in runtime configuration. Gateway binds policy version and records its digest while wrapping the existing `governance.py` primitive. | Missing or invalid policy fails boot. Protected policy storage and durable receipt semantics remain to be implemented and verified. |
+| 6 | Persisted restart state | Explicit isolated state directory for each CLI run; flush on shutdown; verify continuity on a second process boot. | No implicit home-directory state and no shared mutable state across independent test runs. |
+| 7 | Health aggregation | Deterministic roll-up from fresh, actual component probes using `STARTING`, `HEALTHY`, `DEGRADED`, `UNHEALTHY`, and `STOPPING`. | Freshness and timeout thresholds must be explicitly configured and tested. No manual healthy flags or silent default thresholds. |
+| 8 | Required components | Initial candidate set: Lifecycle, Identity loader, Governance gateway, IPC service, and Health registry. | **Conditional on source inspection.** Do not add other modules to the required inventory until their actual source, dependency, and role are inspected and recorded. |
+| 9 | Supervisor and fault injection | Permit control only for explicitly registered disposable test components; block test fault injection in production profile; require separate authorization and audit-log attempts/results. | Reject unregistered and protected targets. A health client cannot escalate to supervisor control. |
+
+### 12.1 Explicit unresolved verification qualifications
+
+The approval above does not waive these gates:
+
+1. **Linux IPC:** identify and implement the actual Unix-domain-socket peer-credential mechanism supported by the target Linux environments; test peer identity, socket ownership/mode, unauthorized local clients, and cleanup.
+2. **Windows IPC:** define the named-pipe security descriptor/ACL and client identity validation for supported Windows versions; test allowed and denied principals, inheritance behavior, and endpoint cleanup. “Restrictive ACL” is a requirement, not evidence that the implementation is restrictive.
+3. **Permission separation:** test that health-only authorization can read health but is denied every supervisor operation; test that supervisor authorization is separately granted, scoped, audited, and denied when missing or invalid.
+4. **Session credentials:** specify generation, entropy source, delivery, storage, expiry/rotation, and replay handling. Never expose credentials in command lines, logs, or evidence bundles.
+5. **Probe thresholds:** select explicit freshness and timeout configuration values based on implementation and target test conditions. Test fresh, stale, missing, timed-out, failed, and recovered probes. No numeric threshold is asserted here.
+6. **Identity and governance:** development JSON schema checks do not prove cryptographic identity. Production trust validation, protected policy binding, key custody, and durable decision receipts remain separate requirements.
+7. **Decision 8 source inspection:** inspect the actual repository tree and dependencies before adding any further required runtime component. The five listed items are the initial approved candidate set, not proof that their code exists.
+8. **Shutdown and harness details:** before OB-01 acceptance lock, specify bounded in-flight-work drain/abort behavior, durable flush success/failure semantics, exit codes, startup/readiness/request/shutdown timeouts, process termination escalation, and guaranteed child-process reaping. Numeric timeout values must be explicit and justified; they are not silently inferred by this document.
+
+### 12.2 Required implementation sequence
+
+The implementation order is fixed:
+
+1. **Spec lock:** resolve the remaining contract details and record the locked interface/thresholds. This step is documentation and review, not runtime implementation.
+2. **OB-01 vertical slice:** implement the minimum local-first OASIS boot path using the approved subprocess, identity, governance, IPC, lifecycle, health-registry, and isolated-state contracts.
+3. **OB-01 subprocess tests:** exercise real process startup, readiness, identity/policy binding, graceful shutdown, and second-process restart continuity.
+4. **OB-02 supervisor/fault-injection tests:** add separately authorized supervisor control for registered disposable test components; verify real health transitions, recovery, production-profile rejection, and health/supervisor permission separation.
+5. **Retire BLOCKED guards only after CI evidence:** remove or change the existing OB-01/OB-02 precondition guards only after the corresponding real acceptance tests have run in CI against the implemented subprocess runtime and the complete evidence supports the change. Never weaken guards merely to make the suite appear green.
+
+No step may be skipped or reordered to make a status appear complete.
+
+### 12.3 Change-scope record
+
+This amendment changes this specification only. It does not add or modify runtime code, acceptance tests, readiness guards, installer behavior, protected core files, or `main`. No merge or deployment is authorized. OB-01 and OB-02 remain **BLOCKED** until implementation and real subprocess/CI evidence satisfy their acceptance criteria.
