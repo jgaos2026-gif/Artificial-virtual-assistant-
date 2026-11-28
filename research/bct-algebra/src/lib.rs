@@ -31,6 +31,8 @@ pub struct CrossingContext {
     pub actor_id: String,
     pub request_id: String,
     pub dependencies: Vec<[u8; 32]>,
+    /// Bounded dispatcher c_Gamma(i): one gate purpose per adjacent generator.
+    pub purpose_by_generator: Vec<CrossingPurpose>,
     /// Fixed logical time. Wall-clock reads are excluded from the pure core.
     pub logical_time: u64,
 }
@@ -46,6 +48,9 @@ impl CrossingContext {
             }
         }
         if self.dependencies.len() > MAX_DEPENDENCIES { return Err(BctError::DependencyLimit); }
+        if self.purpose_by_generator.is_empty() || self.purpose_by_generator.len() > MAX_STRANDS - 1 {
+            return Err(BctError::InvalidContext("purpose_by_generator"));
+        }
         Ok(())
     }
 
@@ -58,6 +63,12 @@ impl CrossingContext {
         bytes.extend_from_slice(&self.logical_time.to_be_bytes());
         bytes.extend_from_slice(&(self.dependencies.len() as u32).to_be_bytes());
         for dependency in &self.dependencies { bytes.extend_from_slice(dependency); }
+        for purpose in &self.purpose_by_generator {
+            bytes.push(match purpose {
+                CrossingPurpose::Integrity => 1, CrossingPurpose::Provenance => 2,
+                CrossingPurpose::Authority => 3,
+            });
+        }
         *blake3::hash(&bytes).as_bytes()
     }
 }
@@ -141,7 +152,11 @@ impl BraidState {
         if index + 1 >= self.strands.len() {
             return Err(BctError::GeneratorOutOfRange { index, strand_count: self.strands.len() });
         }
+        if index >= context.purpose_by_generator.len() {
+            return Err(BctError::InvalidContext("purpose_by_generator"));
+        }
         if self.trace.len() >= MAX_TRACE_EVENTS { return Err(BctError::TraceLimit); }
+        let purpose = context.purpose_by_generator[index];
 
         let left = index as i32 + 1;
         let right = left + 1;
@@ -218,7 +233,8 @@ mod tests {
         CrossingContext {
             policy_id: "policy-v1".into(), schema_id: "strand-v1".into(),
             actor_id: "test-actor".into(), request_id: "test-request".into(),
-            dependencies: vec![], logical_time: 42,
+            dependencies: vec![], purpose_by_generator: vec![CrossingPurpose::Integrity; MAX_STRANDS - 1],
+            logical_time: 42,
         }
     }
     fn state(n: usize) -> BraidState {
@@ -230,7 +246,7 @@ mod tests {
     }
     fn word(s: &mut BraidState, operations: &[(usize, bool)]) {
         for (i, inverse) in operations {
-            s.cross(*i, *inverse, CrossingPurpose::Integrity, &context()).unwrap();
+            s.cross(*i, *inverse, &context()).unwrap();
         }
     }
 
@@ -283,8 +299,10 @@ mod tests {
     #[test]
     fn purpose_is_bound_into_exact_trace_not_topology() {
         let (mut a, mut b) = (state(2), state(2));
-        a.cross(0,false,CrossingPurpose::Integrity,&context()).unwrap();
-        b.cross(0,false,CrossingPurpose::Provenance,&context()).unwrap();
+        a.cross(0,false,&context()).unwrap();
+        let mut provenance_context = context();
+        provenance_context.purpose_by_generator[0] = CrossingPurpose::Provenance;
+        b.cross(0,false,&provenance_context).unwrap();
         assert_ne!(a.eth_digest(), b.eth_digest());
         assert_eq!(a.tes_digest("policy-v1"), b.tes_digest("policy-v1"));
     }
