@@ -292,3 +292,24 @@ def test_real_psutil_can_sample_current_process_on_this_platform():
     assert second.resources.sample_interval_sec.quality is FieldQuality.VALID
     assert second.resources.sample_interval_sec.value > 0
     assert second.resources.cpu_percent.quality is FieldQuality.VALID
+
+
+
+def test_dead_process_status_maps_to_exited():
+    fake = FakePsutil(FakeProcess(status="dead"))
+    sample = collector(fake).collect_process("oasis-supervisor", expected_identity())
+    assert sample.lifecycle is LifecycleState.EXITED
+    assert sample.resources.rss_bytes.quality is FieldQuality.MISSING
+
+
+def test_unrecognized_process_status_fails_to_unknown_not_running():
+    fake = FakePsutil(FakeProcess(status="vendor-specific-state"))
+    sample = collector(fake).collect_process("oasis-supervisor", expected_identity())
+    assert sample.lifecycle is LifecycleState.UNKNOWN
+
+
+def test_expected_identity_cannot_be_reused_for_another_component():
+    with pytest.raises(ValueError, match="component_id"):
+        collector(FakePsutil()).collect_process(
+            "different-component", expected_identity()
+        )
