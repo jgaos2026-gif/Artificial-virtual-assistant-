@@ -1,5 +1,9 @@
 from datetime import datetime, timezone
+import os
+import time
 from types import SimpleNamespace
+
+import psutil
 
 import pytest
 
@@ -257,3 +261,33 @@ def test_expected_identity_from_another_boot_is_rejected():
     assert sample.lifecycle is LifecycleState.UNKNOWN
     assert sample.error_codes == ("PROCESS_IDENTITY_CHANGED",)
     assert sample.resources.cpu_percent.quality is FieldQuality.MISSING
+
+
+
+def test_real_psutil_can_sample_current_process_on_this_platform():
+    pid = os.getpid()
+    process = psutil.Process(pid)
+    created = process.create_time()
+    boot = derive_host_boot_id()
+    identity = ProcessIdentity(
+        "pytest-process", pid, created, boot,
+        derive_instance_id(
+            boot_id=boot, component_id="pytest-process",
+            pid=pid, create_time_epoch=created,
+        ),
+    )
+    collector_instance = PsutilTelemetryCollector(
+        collector_id="pytest-psutil",
+        collector_version=psutil.__version__,
+        boot_id=boot,
+        disk_path=os.getcwd(),
+    )
+    first = collector_instance.collect_process("pytest-process", identity)
+    time.sleep(0.02)
+    second = collector_instance.collect_process("pytest-process", identity)
+    assert first.lifecycle is LifecycleState.RUNNING
+    assert second.lifecycle is LifecycleState.RUNNING
+    assert first.identity.instance_id == identity.instance_id
+    assert second.resources.sample_interval_sec.quality is FieldQuality.VALID
+    assert second.resources.sample_interval_sec.value > 0
+    assert second.resources.cpu_percent.quality is FieldQuality.VALID
