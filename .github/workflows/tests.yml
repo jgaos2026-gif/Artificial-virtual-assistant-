@@ -2,7 +2,7 @@ name: tests
 
 on:
   push:
-    branches: ["main", "foundation/**", "feature/**", "feat/**"]
+    branches: ["main", "foundation/**", "feature/**", "feat/**", "work/**"]
   pull_request:
 
 permissions:
@@ -10,7 +10,11 @@ permissions:
 
 jobs:
   unit-tests:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -32,3 +36,11 @@ jobs:
         run: pytest tests/test_avo_provenance_gate.py
       - name: Full repository test suite
         run: pytest
+      - name: Smoke-test Windows foundation installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/install.ps1 -Runtime "$env:RUNNER_TEMP/ava-foundation-runtime"
+      - name: Smoke-test Linux foundation installer
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash scripts/install.sh "$RUNNER_TEMP/ava-foundation-runtime"
