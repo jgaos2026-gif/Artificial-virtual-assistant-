@@ -10,10 +10,7 @@ from ava_military.decision_receipts import (
     DecisionReceiptLog,
 )
 from ava_military.governance import ActionClass, AuthorityContext, Decision, Mode
-from ava_military.governance_gateway import (
-    DecisionReceiptError as GatewayReceiptError,
-    bind_policy,
-)
+from ava_military.governance_gateway import bind_policy
 
 
 def test_receipt_log_appends_and_verifies_hash_chain(tmp_path):
@@ -163,7 +160,7 @@ def test_gateway_never_returns_allow_when_receipt_write_fails(tmp_path):
         def append(self, payload):
             raise OSError("disk full")
 
-    with pytest.raises(GatewayReceiptError, match="do not execute request"):
+    with pytest.raises(DecisionReceiptError, match="do not execute request"):
         _gateway(tmp_path).authorize_with_receipt(
             _context(),
             "report.read",
