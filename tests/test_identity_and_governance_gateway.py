@@ -6,8 +6,17 @@ import json
 import pytest
 
 from ava_military.governance import ActionClass, AuthorityContext, Decision, Mode
-from ava_military.governance_gateway import PolicyBindingError, bind_policy
-from ava_military.identity.loader import IdentityLoadError, load_identity
+
+from ava_military.governance_gateway import (
+    MAX_POLICY_BYTES,
+    PolicyBindingError,
+    bind_policy,
+)
+from ava_military.identity.loader import (
+    MAX_IDENTITY_BYTES,
+    IdentityLoadError,
+    load_identity,
+)
 
 
 def test_identity_loader_accepts_explicit_development_fixture(tmp_path):
@@ -70,6 +79,22 @@ def test_identity_loader_rejects_duplicate_json_keys(tmp_path):
         load_identity(path, profile="test")
 
 
+def test_identity_loader_rejects_oversized_artifact_before_full_read(tmp_path):
+    path = tmp_path / "identity.json"
+    path.write_bytes(b" " * (MAX_IDENTITY_BYTES + 1))
+
+    with pytest.raises(IdentityLoadError, match="byte limit"):
+        load_identity(path, profile="test")
+
+
+def test_identity_loader_rejects_excessive_json_nesting(tmp_path):
+    path = tmp_path / "identity.json"
+    path.write_bytes(b"[" * 10000 + b"]" * 10000)
+
+    with pytest.raises(IdentityLoadError, match="nesting limit"):
+        load_identity(path, profile="test")
+
+
 def test_identity_loader_rejects_production_profile_without_crypto_validator(tmp_path):
     path = tmp_path / "identity.json"
     path.write_text("{}", encoding="utf-8")
@@ -116,6 +141,22 @@ def test_governance_gateway_rejects_invalid_policy_bundle(tmp_path, raw):
     path.write_bytes(raw)
 
     with pytest.raises(PolicyBindingError):
+        bind_policy(path, operating_mode=Mode.LOCAL_NODE_MESH)
+
+
+def test_governance_gateway_rejects_oversized_policy_before_full_read(tmp_path):
+    path = tmp_path / "policy.json"
+    path.write_bytes(b" " * (MAX_POLICY_BYTES + 1))
+
+    with pytest.raises(PolicyBindingError, match="byte limit"):
+        bind_policy(path, operating_mode=Mode.LOCAL_NODE_MESH)
+
+
+def test_governance_gateway_rejects_excessive_json_nesting(tmp_path):
+    path = tmp_path / "policy.json"
+    path.write_bytes(b"[" * 10000 + b"]" * 10000)
+
+    with pytest.raises(PolicyBindingError, match="nesting limit"):
         bind_policy(path, operating_mode=Mode.LOCAL_NODE_MESH)
 
 

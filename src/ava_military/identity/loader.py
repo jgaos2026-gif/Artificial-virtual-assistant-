@@ -16,6 +16,8 @@ class IdentityLoadError(ValueError):
     """Raised when an identity fixture is missing or violates its schema."""
 
 
+MAX_IDENTITY_BYTES = 64 * 1024
+
 @dataclass(frozen=True, slots=True)
 class IdentityRecord:
     schema_version: int
@@ -73,12 +75,22 @@ def load_identity(
 
     identity_path = Path(path)
     try:
-        raw = identity_path.read_bytes()
+        # Read at most one byte beyond the limit so oversized input is rejected
+        # without loading an attacker-controlled file completely into memory.
+        with identity_path.open("rb") as stream:
+            raw = stream.read(MAX_IDENTITY_BYTES + 1)
     except OSError as exc:
         raise IdentityLoadError("identity artifact is unavailable") from exc
 
+    if len(raw) > MAX_IDENTITY_BYTES:
+        raise IdentityLoadError(
+            f"identity artifact exceeds the {MAX_IDENTITY_BYTES}-byte limit"
+        )
+
     try:
         document = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
+    except RecursionError as exc:
+        raise IdentityLoadError("identity artifact exceeds the JSON nesting limit") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise IdentityLoadError("identity artifact is not valid UTF-8 JSON") from exc
 

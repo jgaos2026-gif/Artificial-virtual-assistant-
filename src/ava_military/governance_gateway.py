@@ -27,6 +27,9 @@ class PolicyBindingError(ValueError):
     """Raised when a policy bundle cannot be safely bound to this runtime."""
 
 
+MAX_POLICY_BYTES = 64 * 1024
+
+
 @dataclass(frozen=True, slots=True)
 class BoundAuthorizationResult:
     """A policy decision annotated with the binding that produced it."""
@@ -119,12 +122,21 @@ def bind_policy(
 
     policy_path = Path(path)
     try:
-        raw = policy_path.read_bytes()
+        # Bound the read itself, rather than trusting a prior stat() result.
+        with policy_path.open("rb") as stream:
+            raw = stream.read(MAX_POLICY_BYTES + 1)
     except OSError as exc:
         raise PolicyBindingError("policy bundle is unavailable") from exc
 
+    if len(raw) > MAX_POLICY_BYTES:
+        raise PolicyBindingError(
+            f"policy bundle exceeds the {MAX_POLICY_BYTES}-byte limit"
+        )
+
     try:
         document = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
+    except RecursionError as exc:
+        raise PolicyBindingError("policy bundle exceeds the JSON nesting limit") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PolicyBindingError("policy bundle is not valid UTF-8 JSON") from exc
 
