@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ava_military.psutil_collector import PsutilTelemetryCollector
+from ava_military.psutil_collector import PsutilTelemetryCollector, derive_host_boot_id
 from ava_military.supervisor_contract import (
     FieldQuality,
     LifecycleState,
@@ -227,3 +227,33 @@ def test_network_counters_are_labelled_host_wide():
     sample = collector(FakePsutil()).collect_process("oasis-supervisor", expected_identity())
     assert sample.resources.net_interface == "system"
     assert sample.resources.net_rx_bytes.value == 200
+
+
+
+def test_boot_id_helper_is_stable_for_same_boot_epoch():
+    class BootClock:
+        @staticmethod
+        def boot_time():
+            return 1000.25
+    assert derive_host_boot_id(BootClock) == derive_host_boot_id(BootClock)
+
+
+def test_boot_id_helper_changes_when_boot_epoch_changes():
+    class FirstBoot:
+        @staticmethod
+        def boot_time():
+            return 1000.25
+    class SecondBoot:
+        @staticmethod
+        def boot_time():
+            return 2000.25
+    assert derive_host_boot_id(FirstBoot) != derive_host_boot_id(SecondBoot)
+
+
+def test_expected_identity_from_another_boot_is_rejected():
+    sample = collector(FakePsutil(), boot="boot-2").collect_process(
+        "oasis-supervisor", expected_identity(boot="boot-1")
+    )
+    assert sample.lifecycle is LifecycleState.UNKNOWN
+    assert sample.error_codes == ("PROCESS_IDENTITY_CHANGED",)
+    assert sample.resources.cpu_percent.quality is FieldQuality.MISSING
