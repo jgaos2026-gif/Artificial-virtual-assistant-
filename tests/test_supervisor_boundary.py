@@ -203,3 +203,18 @@ def test_failed_component_remains_overall_failure_with_missing_and_stale_peers()
         stale_after_seconds=30,
     )
     assert snapshot.overall_state is HealthState.FAILED
+
+
+
+def test_buffer_snapshot_has_one_authoritative_row_per_component_after_failure():
+    buffer = BoundedTelemetryBuffer()
+    buffer.publish(component("engine", HealthState.HEALTHY, 1))
+    buffer.publish(component("engine", HealthState.FAILED, 2))
+    rows = buffer.snapshot()
+    assert len([row for row in rows if row.component_id == "engine"]) == 1
+    assert rows[0].state is HealthState.FAILED
+    snapshot = build_supervisor_health_snapshot(
+        rows, ["engine"],
+        as_of=datetime(2026, 11, 28, 20, 0, tzinfo=timezone.utc),
+    )
+    assert snapshot.overall_state is HealthState.FAILED
