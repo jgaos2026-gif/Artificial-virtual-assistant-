@@ -157,4 +157,5 @@ Exit evidence: independent roles and failure domains, admission/revocation, stag
 
 ## 9. Change history
 
-- **0.1.0-draft (2026-11-28):** Initial add-only interface map prepared from the canonical AVA Master Plan, current repository README, architecture baseline, decisions/open-questions record, installation-readiness assessment, and AVA v1 traceability map. No protected implementation changed.\n- **Evidence receipt implementation candidate (2026-11-28):** A bounded same-host receipt log and governance receipt path are under test on `feat/slice-a-durable-governance-receipts-2026-11-28`; this does not close independent anchoring, authenticated authority, or integrated-runtime gates.
+- **0.1.0-draft (2026-11-28):** Initial add-only interface map prepared from the canonical AVA Master Plan, current repository README, architecture baseline, decisions/open-questions record, installation-readiness assessment, and AVA v1 traceability map. No protected implementation changed.
+- **Evidence receipt implementation candidate (2026-11-28):** A bounded same-host receipt log and governance receipt path are under test on `feat/slice-a-durable-governance-receipts-2026-11-28`; this does not close independent anchoring, authenticated authority, or integrated-runtime gates.
