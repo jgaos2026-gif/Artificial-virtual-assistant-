@@ -67,8 +67,12 @@ class CrossProcessAdvisoryLock:
                 if os.name == "nt":
                     import msvcrt
 
-                    handle.seek(0)
-                    if handle.read(1) == b"":
+                    # Do not read byte zero before locking it. On Windows,
+                    # another process holding the byte-range lock can make that
+                    # read fail with PermissionError instead of waiting. File
+                    # metadata remains readable while the byte is locked.
+                    if os.fstat(handle.fileno()).st_size == 0:
+                        handle.seek(0, os.SEEK_END)
                         handle.write(b"0")
                         handle.flush()
                         os.fsync(handle.fileno())
