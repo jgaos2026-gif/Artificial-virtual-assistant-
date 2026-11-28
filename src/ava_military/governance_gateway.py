@@ -245,8 +245,8 @@ __all__ = [
     "BoundAuthorizationResult",
     "Decision",
     "GovernanceGateway",
-    "RecordedAuthorizationResult",\n    "RecordedAuthorizationResult",
     "Mode",
     "PolicyBindingError",
+    "RecordedAuthorizationResult",
     "bind_policy",
 ]
