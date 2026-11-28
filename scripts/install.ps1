@@ -36,7 +36,7 @@ if (-not (Test-Path -LiteralPath $venv)) {
 $venvPython = Join-Path $venv "Scripts\\python.exe"
 if (-not (Test-Path -LiteralPath $venvPython)) { throw "Expected Windows venv interpreter is missing: $venvPython" }
 
-& $venvPython -m pip install --no-deps --no-build-isolation -e $Source
+& $venvPython -m pip install --no-deps -e $Source
 if ($LASTEXITCODE -ne 0) { throw "Editable package installation failed. Runtime directory was not deleted." }
 
 $doctor = & $venvPython -m ava_military.doctor --source $Source --runtime $Runtime
