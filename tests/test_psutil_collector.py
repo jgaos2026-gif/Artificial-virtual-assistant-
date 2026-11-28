@@ -155,7 +155,7 @@ def test_pid_reuse_changes_instance_and_resets_cpu_baseline():
     second = c.collect_process("oasis-supervisor", expected_identity(created=2000.0))
     assert second.identity.instance_id != expected_identity(created=1000.0).instance_id
     assert second.resources.cpu_percent.quality is FieldQuality.MISSING
-    assert second.resources.cpu_percent.error_code == "CPU_BASELINE_REQUIRED"
+    assert second.resources.cpu_percent.error_code == "CPU_BASELINE_RESET"
 
 
 def test_expected_identity_mismatch_is_unknown_and_metrics_are_not_attached():
