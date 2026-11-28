@@ -284,11 +284,11 @@ mod tests {
     #[test]
     fn bounds_are_enforced() {
         let mut s = state(2);
-        assert!(matches!(s.cross(1,false,CrossingPurpose::Integrity,&context()),
+        assert!(matches!(s.cross(1,false,&context()),
             Err(BctError::GeneratorOutOfRange { .. })));
         let mut ctx = context();
         ctx.dependencies = vec![[0;32]; MAX_DEPENDENCIES + 1];
-        assert_eq!(s.cross(0,false,CrossingPurpose::Integrity,&ctx), Err(BctError::DependencyLimit));
+        assert_eq!(s.cross(0,false,&ctx), Err(BctError::DependencyLimit));
     }
     #[test]
     fn duplicate_ids_are_rejected() {
