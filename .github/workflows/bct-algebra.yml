@@ -1,0 +1,22 @@
+name: BCT algebra research tests
+
+on:
+  push:
+    branches: [main, "research/bct-algebra-core-v0.1"]
+    paths:
+      - "research/bct-algebra/**"
+      - ".github/workflows/bct-algebra.yml"
+  pull_request:
+    paths:
+      - "research/bct-algebra/**"
+      - ".github/workflows/bct-algebra.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run BCT algebra tests
+        run: cargo test --manifest-path research/bct-algebra/Cargo.toml
