@@ -33,7 +33,7 @@ Passing a component test does not establish integrated-system security or milita
 
 ## Repository status
 
-This repository now contains a research-stage Python reference implementation for selected governance, admission, provenance, COLD-record, memory, and checkpoint interfaces. These modules are not integrated into a deployable AVA/OASIS runtime. Main CI run #199 passed 98 tests on commit 373b7c8583b34fca06f1dd2966ea50ffb1242821; those are component/reference tests, not the eleven integrated acceptance tests. The integrated acceptance gate remains NOT RUN. No production deployment or operational use is authorized by this repository.
+This repository contains a research-stage Python reference implementation for selected governance, admission, provenance, COLD-record, memory, and checkpoint interfaces. These modules are not integrated into a deployable AVA/OASIS runtime. Main CI run #199 passed 98 tests on commit 373b7c8583b34fca06f1dd2966ea50ffb1242821; those are component/reference tests, not the eleven integrated acceptance tests. The integrated acceptance gate remains NOT RUN. No production deployment or operational use is authorized by this repository.
 
 ## Limited local research foundation install
 
@@ -45,13 +45,14 @@ A Windows PowerShell and Linux shell installer is available in [scripts](scripts
 2. [Security boundaries](docs/security/SECURITY_BOUNDARIES.md)
 3. [Threat model](docs/security/THREAT_MODEL.md)
 4. [Assurance and test plan](docs/assurance/ASSURANCE_PLAN.md)
-5. [Military evaluation roadmap](docs/roadmap/MILITARY_EVALUATION_ROADMAP.md)
-6. [Evidence register](docs/evidence/EVIDENCE_REGISTER.md)
-7. [Decisions and open questions](docs/governance/DECISIONS_AND_OPEN_QUESTIONS.md)
-8. [Engineering terminology standard](docs/engineering/TERMINOLOGY_STANDARD.md)
-9. [Installation and hardening readiness](docs/engineering/INSTALLATION_READINESS.md)
-10. [Development workstation and infrastructure stack](docs/engineering/DEVELOPMENT_STACK.md)
-11. [Multi-platform and Linux distribution compatibility](docs/engineering/PLATFORM_COMPATIBILITY.md)
+5. [AVA v1 Definition-of-Done traceability](docs/assurance/AVA_V1_DEFINITION_OF_DONE_TRACEABILITY.md)
+6. [Military evaluation roadmap](docs/roadmap/MILITARY_EVALUATION_ROADMAP.md)
+7. [Evidence register](docs/evidence/EVIDENCE_REGISTER.md)
+8. [Decisions and open questions](docs/governance/DECISIONS_AND_OPEN_QUESTIONS.md)
+9. [Engineering terminology standard](docs/engineering/TERMINOLOGY_STANDARD.md)
+10. [Installation and hardening readiness](docs/engineering/INSTALLATION_READINESS.md)
+11. [Development workstation and infrastructure stack](docs/engineering/DEVELOPMENT_STACK.md)
+12. [Multi-platform and Linux distribution compatibility](docs/engineering/PLATFORM_COMPATIBILITY.md)
 
 ## Safety and use restrictions
 
