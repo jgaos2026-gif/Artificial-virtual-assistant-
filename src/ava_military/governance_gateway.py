@@ -13,7 +13,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .governance import (
+from .decision_receipts import DecisionReceipt, DecisionReceiptError, DecisionReceiptLog
+\nfrom .governance import (
     ActionClass,
     AuthorizationResult,
     AuthorityContext,
@@ -178,7 +179,7 @@ __all__ = [
     "AuthorityContext",
     "BoundAuthorizationResult",
     "Decision",
-    "GovernanceGateway",
+    "GovernanceGateway",\n    "RecordedAuthorizationResult",
     "Mode",
     "PolicyBindingError",
     "bind_policy",
