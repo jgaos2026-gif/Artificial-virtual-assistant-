@@ -100,8 +100,13 @@ def _exclusive_writer_lock(lock_path: Path) -> Iterator[None]:
     try:
         if os.name == "nt":
             import msvcrt
-            handle.seek(0)
-            if handle.read(1) == b"":
+            # Never read the byte being locked: another writer may already
+            # hold the Windows byte-range lock, and that read can fail with
+            # PermissionError instead of waiting. fstat does not read the
+            # locked byte. Concurrent initializers may append an extra byte,
+            # which is harmless because every writer locks byte zero.
+            if os.fstat(handle.fileno()).st_size == 0:
+                handle.seek(0, os.SEEK_END)
                 handle.write(b"0")
                 handle.flush()
             handle.seek(0)
