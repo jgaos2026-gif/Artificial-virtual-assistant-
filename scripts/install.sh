@@ -19,7 +19,7 @@ else
 fi
 
 python3 -m venv "$RUNTIME/.venv"
-"$RUNTIME/.venv/bin/python" -m pip install --no-deps --no-build-isolation -e "$SOURCE"
+"$RUNTIME/.venv/bin/python" -m pip install --no-deps -e "$SOURCE"
 "$RUNTIME/.venv/bin/python" -m ava_military.doctor --source "$SOURCE" --runtime "$RUNTIME" > "$RUNTIME/foundation-doctor.json"
 echo "AVA research foundation installed. This is NOT the integrated AVA/OASIS runtime."
 echo "Runtime: $RUNTIME"
