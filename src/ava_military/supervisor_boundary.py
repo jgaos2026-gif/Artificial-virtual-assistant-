@@ -128,6 +128,20 @@ class BoundedCollectorRunner:
                 process.join(0)
 
 
+@dataclass(frozen=True, slots=True)
+class PriorityEvent:
+    event_id: str
+    component_id: str
+    event_code: str
+    kind: str
+
+    def __post_init__(self) -> None:
+        for field_name in ("event_id", "component_id", "event_code", "kind"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip() or len(value) > 128:
+                raise ValueError(f"{field_name} must be a non-empty string of at most 128 characters")
+
+
 class ObservationAdmission:
     """Allow-list and replay guard for collector observations.
 
@@ -135,7 +149,7 @@ class ObservationAdmission:
     which OS process sent the observation; that requires authenticated IPC.
     """
 
-    def __init__(self, *, allowed_collector_ids: Iterable[str], expected_boot_id: str):
+    def __init__(self, *, allowed_collector_ids: Iterable[str], expected_boot_id: str, max_tracked_streams: int = 512):
         allowed = tuple(allowed_collector_ids)
         if not allowed or any(not isinstance(item, str) or not item.strip() for item in allowed):
             raise ValueError("allowed_collector_ids must contain non-empty IDs")
@@ -143,8 +157,11 @@ class ObservationAdmission:
             raise ValueError("allowed_collector_ids must be unique")
         if not isinstance(expected_boot_id, str) or not expected_boot_id.strip():
             raise ValueError("expected_boot_id must be non-empty")
+        if type(max_tracked_streams) is not int or max_tracked_streams <= 0:
+            raise ValueError("max_tracked_streams must be a positive integer")
         self.allowed_collector_ids = frozenset(item.strip() for item in allowed)
         self.expected_boot_id = expected_boot_id.strip()
+        self.max_tracked_streams = max_tracked_streams
         self._last_sequence: dict[tuple[str, str, str], int] = {}
 
     def admit(self, observation: ObservationEnvelope) -> BoundaryResult:
@@ -154,14 +171,14 @@ class ObservationAdmission:
             return BoundaryResult(False, "COLLECTOR_NOT_ALLOWLISTED")
         if observation.boot_id != self.expected_boot_id:
             return BoundaryResult(False, "BOOT_ID_MISMATCH")
-        if observation.identity.component_id != observation.identity.component_id:
-            return BoundaryResult(False, "COMPONENT_ID_MISMATCH")
         key = (
             observation.collector_id,
             observation.boot_id,
             observation.identity.component_id,
         )
         previous = self._last_sequence.get(key)
+        if previous is None and len(self._last_sequence) >= self.max_tracked_streams:
+            return BoundaryResult(False, "STREAM_REGISTRY_FULL")
         if previous is not None and observation.sequence <= previous:
             return BoundaryResult(False, "SEQUENCE_REPLAY_OR_OUT_OF_ORDER")
         self._last_sequence[key] = observation.sequence
@@ -187,6 +204,7 @@ class BoundedTelemetryBuffer:
         self.max_fault_records = max_fault_records
         self._routine: dict[str, ComponentObservation] = {}
         self._faults: dict[tuple[str, str], ComponentObservation] = {}
+        self._priority_events: dict[str, PriorityEvent] = {}
         self.coalesced_count = 0
         self.overflow_latched = False
 
@@ -208,9 +226,24 @@ class BoundedTelemetryBuffer:
         self._routine[observation.component_id] = observation
         return True
 
+    def publish_priority_event(self, event: PriorityEvent) -> bool:
+        if self.overflow_latched:
+            return False
+        if event.event_id in self._priority_events:
+            return True
+        if len(self._faults) + len(self._priority_events) >= self.max_fault_records:
+            self.overflow_latched = True
+            return False
+        self._priority_events[event.event_id] = event
+        return True
+
     def snapshot(self) -> tuple[ComponentObservation, ...]:
         # Fault records are never replaced by routine coalescing.
         return tuple(self._faults.values()) + tuple(self._routine.values())
+
+    @property
+    def priority_events(self) -> tuple[PriorityEvent, ...]:
+        return tuple(self._priority_events.values())
 
 
 def build_supervisor_health_snapshot(
@@ -234,5 +267,6 @@ __all__ = [
     "BoundedTelemetryBuffer",
     "BoundaryResult",
     "ObservationAdmission",
+    "PriorityEvent",
     "build_supervisor_health_snapshot",
 ]
