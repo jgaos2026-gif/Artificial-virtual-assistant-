@@ -109,7 +109,7 @@ class PsutilTelemetryCollector:
                 self._empty_resources(FieldQuality.MISSING, "PROCESS_NOT_FOUND"),
                 ("PROCESS_NOT_FOUND",),
             )
-        except self._psutil.AccessDenied:
+        except (self._psutil.AccessDenied, PermissionError):
             identity = ProcessIdentity(component_id, None, None, self.boot_id, f"unverified:{sample_id}")
             return ObservationEnvelope(
                 sample_id, sequence, self.collector_id, self.collector_version,
@@ -179,7 +179,7 @@ class PsutilTelemetryCollector:
         except self._psutil.NoSuchProcess:
             lifecycle = LifecycleState.EXITED
             errors.append("PROCESS_DISAPPEARED_DURING_STATUS")
-        except self._psutil.AccessDenied:
+        except (self._psutil.AccessDenied, PermissionError):
             lifecycle = LifecycleState.UNKNOWN
             errors.append("PROCESS_STATUS_DENIED")
 
@@ -223,7 +223,7 @@ class PsutilTelemetryCollector:
         except self._psutil.NoSuchProcess:
             lifecycle = LifecycleState.EXITED
             errors.append("PROCESS_DISAPPEARED_DURING_CPU_SAMPLE")
-        except self._psutil.AccessDenied:
+        except (self._psutil.AccessDenied, PermissionError):
             cpu_metric = self._denied("CPU_ACCESS_DENIED")
 
         def read_field(reader, label, transform=lambda value: value):
