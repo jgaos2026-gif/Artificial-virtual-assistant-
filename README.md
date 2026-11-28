@@ -47,6 +47,7 @@ This repository now contains a research-stage Python reference implementation fo
 8. [Engineering terminology standard](docs/engineering/TERMINOLOGY_STANDARD.md)
 9. [Installation and hardening readiness](docs/engineering/INSTALLATION_READINESS.md)
 10. [Development workstation and infrastructure stack](docs/engineering/DEVELOPMENT_STACK.md)
+11. [Multi-platform and Linux distribution compatibility](docs/engineering/PLATFORM_COMPATIBILITY.md)
 
 ## Safety and use restrictions
 
