@@ -1,0 +1,173 @@
+"""Runtime binding adapter for the existing pure governance policy primitive.
+
+This module binds a versioned policy descriptor to an operating mode and
+delegates authorization decisions to ava_military.governance.
+It does not authenticate actors, protect policy storage, or create durable
+decision receipts; those integrations remain separate acceptance gates.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+from .governance import (
+    ActionClass,
+    AuthorizationResult,
+    AuthorityContext,
+    Decision,
+    Mode,
+    authorize as evaluate_policy,
+)
+
+
+class PolicyBindingError(ValueError):
+    """Raised when a policy bundle cannot be safely bound to this runtime."""
+
+
+@dataclass(frozen=True, slots=True)
+class BoundAuthorizationResult:
+    """A policy decision annotated with the binding that produced it."""
+
+    decision: Decision
+    reason: str
+    policy_version: str
+    policy_digest: str
+
+    @classmethod
+    def from_policy_result(
+        cls,
+        result: AuthorizationResult,
+        *,
+        policy_version: str,
+        policy_digest: str,
+    ) -> "BoundAuthorizationResult":
+        return cls(
+            decision=result.decision,
+            reason=result.reason,
+            policy_version=policy_version,
+            policy_digest=policy_digest,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GovernanceGateway:
+    """Immutable policy binding for one runtime instance."""
+
+    policy_version: str
+    policy_digest: str
+    mode: Mode
+
+    def authorize(
+        self,
+        context: AuthorityContext | None,
+        capability: str,
+        required_scope: str,
+    ) -> BoundAuthorizationResult:
+        """Evaluate using the bound mode; never trust a caller-selected mode."""
+        if context is None:
+            result = AuthorizationResult(Decision.DENY, "MISSING_AUTHORITY_CONTEXT")
+        elif context.mode is not self.mode:
+            result = AuthorizationResult(Decision.DENY, "BOUND_MODE_MISMATCH")
+        else:
+            result = evaluate_policy(context, capability, required_scope)
+
+        return BoundAuthorizationResult.from_policy_result(
+            result,
+            policy_version=self.policy_version,
+            policy_digest=self.policy_digest,
+        )
+
+    @staticmethod
+    def require_allow(result: BoundAuthorizationResult) -> None:
+        """Raise for DEFER/DENY; callers must never treat either as permission."""
+        if result.decision is not Decision.ALLOW:
+            raise PermissionError(result.reason)
+
+
+_ALLOWED_POLICY_FIELDS = {"schema_version", "policy_version", "mode"}
+_SUPPORTED_POLICY_SCHEMA_VERSION = 1
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise PolicyBindingError(f"duplicate policy field: {key}")
+        result[key] = value
+    return result
+
+
+def bind_policy(
+    path: str | Path,
+    *,
+    operating_mode: str | Mode,
+) -> GovernanceGateway:
+    """Load a strict policy descriptor and bind its digest and operating mode.
+
+    The policy descriptor is a versioned JSON object containing exactly
+    schema_version, policy_version, and mode. The configured mode must match
+    the descriptor. The digest identifies the exact source bytes; it does not
+    prove protected storage or authenticity.
+    """
+    try:
+        configured_mode = operating_mode if isinstance(operating_mode, Mode) else Mode(operating_mode)
+    except (TypeError, ValueError) as exc:
+        raise PolicyBindingError("unsupported configured operating mode") from exc
+
+    policy_path = Path(path)
+    try:
+        raw = policy_path.read_bytes()
+    except OSError as exc:
+        raise PolicyBindingError("policy bundle is unavailable") from exc
+
+    try:
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PolicyBindingError("policy bundle is not valid UTF-8 JSON") from exc
+
+    if not isinstance(document, dict):
+        raise PolicyBindingError("policy bundle root must be a JSON object")
+
+    unknown = set(document) - _ALLOWED_POLICY_FIELDS
+    missing = _ALLOWED_POLICY_FIELDS - set(document)
+    if unknown:
+        raise PolicyBindingError(f"unsupported policy fields: {', '.join(sorted(unknown))}")
+    if missing:
+        raise PolicyBindingError(f"missing policy fields: {', '.join(sorted(missing))}")
+
+    version = document["schema_version"]
+    if type(version) is not int or version != _SUPPORTED_POLICY_SCHEMA_VERSION:
+        raise PolicyBindingError("unsupported or invalid policy schema_version")
+
+    policy_version = document["policy_version"]
+    if not isinstance(policy_version, str) or not policy_version.strip():
+        raise PolicyBindingError("policy_version must be a non-empty string")
+
+    try:
+        bundle_mode = Mode(document["mode"])
+    except (TypeError, ValueError) as exc:
+        raise PolicyBindingError("policy bundle contains an unsupported mode") from exc
+
+    if bundle_mode is not configured_mode:
+        raise PolicyBindingError("configured operating mode does not match policy bundle")
+
+    return GovernanceGateway(
+        policy_version=policy_version.strip(),
+        policy_digest=hashlib.sha256(raw).hexdigest(),
+        mode=configured_mode,
+    )
+
+
+__all__ = [
+    "ActionClass",
+    "AuthorityContext",
+    "BoundAuthorizationResult",
+    "Decision",
+    "GovernanceGateway",
+    "Mode",
+    "PolicyBindingError",
+    "bind_policy",
+]
