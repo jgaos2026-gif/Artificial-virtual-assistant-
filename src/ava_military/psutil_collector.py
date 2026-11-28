@@ -8,6 +8,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import time
 import uuid
+import hashlib
+import math
 from typing import Callable
 
 import psutil
@@ -21,6 +23,21 @@ from .supervisor_contract import (
     ResourceSample,
     derive_instance_id,
 )
+
+
+MAX_CPU_BASELINES = 512
+
+
+def derive_host_boot_id(psutil_module=psutil) -> str:
+    """Create a stable per-boot identifier from psutil's cross-platform boot epoch.
+
+    This is an operational boot discriminator, not a hardware-backed attestation.
+    """
+    boot_epoch = float(psutil_module.boot_time())
+    if not math.isfinite(boot_epoch) or boot_epoch <= 0:
+        raise ValueError("psutil returned an invalid boot time")
+    digest = hashlib.sha256(f"{boot_epoch:.6f}".encode("ascii")).hexdigest()
+    return f"boot-{digest}"
 
 
 class PsutilTelemetryCollector:
@@ -197,6 +214,9 @@ class PsutilTelemetryCollector:
             cpu_times = process.cpu_times()
             cpu_total = float(cpu_times.user + cpu_times.system)
             previous = self._cpu_baselines.get(component_id)
+            if component_id not in self._cpu_baselines and len(self._cpu_baselines) >= MAX_CPU_BASELINES:
+                oldest_component = next(iter(self._cpu_baselines))
+                del self._cpu_baselines[oldest_component]
             self._cpu_baselines[component_id] = (
                 self.boot_id, actual_identity.instance_id, monotonic_ts, cpu_total
             )
@@ -294,4 +314,4 @@ class PsutilTelemetryCollector:
         )
 
 
-__all__ = ["PsutilTelemetryCollector"]
+__all__ = ["MAX_CPU_BASELINES", "PsutilTelemetryCollector", "derive_host_boot_id"]
