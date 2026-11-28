@@ -3,7 +3,6 @@ import os
 import time
 from types import SimpleNamespace
 
-import psutil
 
 import pytest
 
@@ -265,6 +264,8 @@ def test_expected_identity_from_another_boot_is_rejected():
 
 
 def test_real_psutil_can_sample_current_process_on_this_platform():
+    import psutil
+
     pid = os.getpid()
     process = psutil.Process(pid)
     created = process.create_time()
