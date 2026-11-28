@@ -19,4 +19,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run BCT algebra tests
-        run: cargo test --manifest-path research/bct-algebra/Cargo.toml --locked
+        run: cargo test --manifest-path research/bct-algebra/Cargo.toml
