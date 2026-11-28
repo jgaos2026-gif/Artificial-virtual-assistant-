@@ -83,6 +83,27 @@ def test_receipt_log_rejects_non_standard_json_numbers(tmp_path):
         DecisionReceiptLog(tmp_path / "decisions.jsonl").append({"value": float("nan")})
 
 
+def test_receipt_log_rejects_oversized_record(tmp_path, monkeypatch):
+    import ava_military.decision_receipts as receipts
+
+    monkeypatch.setattr(receipts, "MAX_RECEIPT_RECORD_BYTES", 96)
+    with pytest.raises(DecisionReceiptError, match="serialized receipt exceeds"):
+        DecisionReceiptLog(tmp_path / "decisions.jsonl").append({"payload": "x" * 200})
+
+
+def test_receipt_log_refuses_capacity_without_rotating_or_deleting(tmp_path, monkeypatch):
+    import ava_military.decision_receipts as receipts
+
+    path = tmp_path / "decisions.jsonl"
+    log = DecisionReceiptLog(path)
+    log.append({"event": "first"})
+    before = path.read_bytes()
+    monkeypatch.setattr(receipts, "MAX_RECEIPT_LOG_BYTES", len(before))
+    with pytest.raises(DecisionReceiptError, match="capacity reached"):
+        log.append({"event": "second"})
+    assert path.read_bytes() == before
+
+
 def test_receipt_log_return_value_cannot_mutate_persisted_history(tmp_path):
     log = DecisionReceiptLog(tmp_path / "decisions.jsonl")
     receipt = log.append({"event": "ALLOW", "detail": {"value": 1}})
