@@ -97,11 +97,10 @@ class PsutilTelemetryCollector:
         wall_time = self._wall_clock().astimezone(timezone.utc).isoformat()
         errors: list[str] = []
 
-        try:
-            process = self._psutil.Process(expected_identity.pid if expected_identity else None)
-        except TypeError:
-            # A configured target PID is supplied through expected_identity.
+        if expected_identity is None or expected_identity.pid is None:
             raise ValueError("expected_identity with a PID is required by this collector")
+        try:
+            process = self._psutil.Process(expected_identity.pid)
         except self._psutil.NoSuchProcess:
             identity = ProcessIdentity(component_id, None, None, self.boot_id, f"unavailable:{sample_id}")
             return ObservationEnvelope(
@@ -118,9 +117,6 @@ class PsutilTelemetryCollector:
                 self._empty_resources(FieldQuality.DENIED, "PROCESS_ACCESS_DENIED"),
                 ("PROCESS_ACCESS_DENIED",),
             )
-
-        if expected_identity is None or expected_identity.pid is None:
-            raise ValueError("expected_identity with a PID is required by this collector")
 
         try:
             create_time = float(process.create_time())
@@ -266,13 +262,16 @@ class PsutilTelemetryCollector:
             vms = self._error("MEMORY_READ_ERROR")
 
         disk = read_field(lambda: self._psutil.disk_usage(self.disk_path).free, "DISK")
-        network = read_field(lambda: self._psutil.net_io_counters(), "NETWORK")
-        if network.quality is FieldQuality.VALID:
-            net_rx = self._valid(int(network.value and network.value.bytes_recv or 0))
-            net_tx = self._valid(int(network.value and network.value.bytes_sent or 0))
-        else:
-            net_rx = network
-            net_tx = network
+        try:
+            network_counters = self._psutil.net_io_counters()
+            net_rx = self._valid(int(network_counters.bytes_recv))
+            net_tx = self._valid(int(network_counters.bytes_sent))
+        except (self._psutil.AccessDenied, PermissionError):
+            net_rx = self._denied("NETWORK_ACCESS_DENIED")
+            net_tx = self._denied("NETWORK_ACCESS_DENIED")
+        except OSError:
+            net_rx = self._error("NETWORK_READ_ERROR")
+            net_tx = self._error("NETWORK_READ_ERROR")
 
         if lifecycle in (LifecycleState.EXITED, LifecycleState.ZOMBIE):
             rss = vms = self._missing("PROCESS_NO_LONGER_SAMPLEABLE")
