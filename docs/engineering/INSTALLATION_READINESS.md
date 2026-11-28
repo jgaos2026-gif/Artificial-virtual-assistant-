@@ -7,9 +7,9 @@
 
 ## 1. Executive assessment
 
-**Current classification: research-stage Python reference implementation. Not an installable AVA runtime and not a hardened deployment.**
+**Current classification: research-stage Python reference implementation with a limited local foundation installer. Not an integrated AVA/OASIS runtime and not a hardened deployment.**
 
-The repository contains reference components for governance decisions, Clip Brick admission, COLD record handling, provenance classification, memory staging, and checkpoint/wake verification. Main has reproducible component-test evidence.
+The repository contains reference components for governance decisions, Clip Brick admission, COLD record handling, provenance classification, memory staging, and checkpoint/wake verification. A Windows PowerShell and Linux shell installer now install the Python research package into a separate, non-empty-directory-protected runtime location; a read-only doctor reports package/environment state. These scripts do not install or start AVA/OASIS services. Component CI evidence exists, but this branch's installer smoke tests are not yet confirmed.
 
 It does not contain the integrated OASIS runtime, an NV012 document-grounded application, or an NV010 Linux-hardening tool. The eleven integrated acceptance tests remain NOT RUN. No operational, Navy, DoD, ATO, CUI, classified, or field-readiness claim is supported.
 
@@ -32,7 +32,7 @@ Main CI run #199 reports **98 passed** on the assessed commit. This is component
 
 The recursive main-branch inventory contains no:
 
-- Linux installer, uninstaller, upgrade utility, rollback utility, or installation doctor.
+- Full AVA/OASIS Linux deployment installer, uninstaller, upgrade utility, rollback utility, or integrated runtime doctor. A limited Python foundation installer and read-only package doctor now exist on the work branch; they do not close the full deployment gate.
 - Runtime entry point, service unit, API server, user interface, or OASIS lifecycle integration.
 - Local model adapter, inference runtime configuration, or end-to-end model-disconnection behavior.
 - NV012 document ingestion, indexing, retrieval, grounded-answer, citation-validation, and learner-evaluation application.
@@ -42,7 +42,7 @@ The recursive main-branch inventory contains no:
 - VS Code workspace configuration, tasks, launch profiles, or development-container configuration.
 - Backup/restore scripts, backup format, retention policy, key-recovery procedure, or restore-drill evidence.
 - Runtime dependency lockfile, SBOM generation, signed release artifact, release workflow, or published installation package.
-- SECURITY.md, CODEOWNERS, or Dependabot configuration.
+- None of the above metadata files on the assessed main commit. SECURITY.md, CODEOWNERS, and Dependabot configuration have been added on the work branch but are not merged.
 
 The project metadata declares no runtime dependencies. The repository is public, has no GitHub release, no license file, and no configured branch ruleset. The main branch is currently unprotected. The workflow runs tests but does not yet build and verify a release artifact, build a container, scan dependencies, generate an SBOM, or perform static security analysis.
 
@@ -131,3 +131,17 @@ Do not label the build “ready to install” until all of the following are tru
 10. Known limitations and residual risks are published.
 
 Passing this gate would support a **hardened, unclassified research installation** within its declared scope. It would not establish Navy/DoD approval, ATO, CUI authorization, certification, or operational readiness.
+
+
+## 9. Work-branch update — 2026-11-27
+
+Branch `work/ava-local-research-install-2026-11-27` and draft PR #19 add:
+- Windows PowerShell and Linux shell scripts for a limited local research foundation install.
+- A read-only `ava_military.doctor` diagnostic and focused tests.
+- A runbook that explicitly lists non-goals and remaining integration gates.
+- SECURITY.md, CODEOWNERS, and Dependabot metadata.
+- A Windows/Linux CI matrix with installer smoke-test steps.
+
+The installer refuses to overwrite a non-empty target. It installs no service, listener, firewall rule, privileged component, model, or automatic recovery. The branch's latest commit has not yet surfaced a workflow run in the available GitHub status query. Therefore, the new tests and install scripts are **NOT YET VERIFIED BY CI**. Do not treat this branch as a successful install record.
+
+The prior inventory conclusions remain: authenticated IPC, live Universal Braid, three-room runtime, external SB688 anchor/quarantine/recovery, independent SB712 witness quorum, OS-enforced isolation, integrated memory/backup/restore, signed release/SBOM, and integrated acceptance are still open.
