@@ -7,7 +7,7 @@ name = "ava-military-research"
 version = "0.1.0"
 description = "Defensive research scaffold for AVA's governed local-first architecture"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["psutil>=6.0,<8.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
