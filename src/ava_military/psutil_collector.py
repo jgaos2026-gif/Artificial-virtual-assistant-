@@ -124,6 +124,8 @@ class PsutilTelemetryCollector:
 
         if expected_identity is None or expected_identity.pid is None:
             raise ValueError("expected_identity with a PID is required by this collector")
+        if expected_identity.component_id != component_id:
+            raise ValueError("expected_identity component_id does not match requested component")
         try:
             process = self._psutil.Process(expected_identity.pid)
         except self._psutil.NoSuchProcess:
@@ -196,8 +198,15 @@ class PsutilTelemetryCollector:
                 lifecycle = LifecycleState.ZOMBIE
             elif status in (self._psutil.STATUS_STOPPED, self._psutil.STATUS_TRACING_STOP):
                 lifecycle = LifecycleState.STOPPED
-            else:
+            elif status == "dead":
+                lifecycle = LifecycleState.EXITED
+            elif status in {
+                "running", "sleeping", "disk-sleep", "wake-kill", "waking",
+                "parked", "idle", "locked", "waiting",
+            }:
                 lifecycle = LifecycleState.RUNNING
+            else:
+                lifecycle = LifecycleState.UNKNOWN
         except self._psutil.ZombieProcess:
             lifecycle = LifecycleState.ZOMBIE
             errors.append("PROCESS_ZOMBIE")
