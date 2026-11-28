@@ -150,6 +150,8 @@ class ObservationAdmission:
     """
 
     def __init__(self, *, allowed_collector_ids: Iterable[str], expected_boot_id: str, max_tracked_streams: int = 512):
+        if isinstance(allowed_collector_ids, (str, bytes)):
+            raise ValueError("allowed_collector_ids must be an iterable of IDs, not text")
         allowed = tuple(allowed_collector_ids)
         if not allowed or any(not isinstance(item, str) or not item.strip() for item in allowed):
             raise ValueError("allowed_collector_ids must contain non-empty IDs")
